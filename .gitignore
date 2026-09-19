@@ -1,0 +1,39 @@
+# --- Real financial data must never enter this repository -------------------
+# The pre-commit hook in .pre-commit-config.yaml enforces this too; these
+# patterns are the first line of defence.
+*statement*.csv
+*transactions*.csv
+*activity*.csv
+*export*.csv
+!tests/fixtures/*.csv
+/data/
+/statements/
+*.ofx
+*.qfx
+*.qif
+
+# LedgerLens's own database
+*.db
+*.db-wal
+*.db-shm
+categories.yaml
+!src/ledgerlens/rules/*.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

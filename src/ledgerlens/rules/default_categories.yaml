@@ -1,0 +1,108 @@
+# Default category rules for LedgerLens.
+#
+# Rules are evaluated top to bottom; the first match wins. Patterns are
+# case-insensitive regular expressions matched against the *normalized merchant*
+# name by default. Set `field: description` to match the raw bank descriptor
+# instead, which is useful for things the merchant name loses (wire transfers,
+# cheque numbers).
+#
+# To override any of this, copy the entries you care about into
+# `$LEDGERLENS_HOME/categories.yaml` — user rules are evaluated before these.
+#
+# Pull requests adding merchants are very welcome; keep each list alphabetical.
+
+version: 1
+
+categories:
+  - category: Income
+    field: description
+    match:
+      - "payroll|direct deposit|salary|dir dep"
+      - "interest paid|dividend"
+      - "tax refund|hmrc|irs treas"
+
+  - category: Transfers
+    field: description
+    match:
+      - "transfer to|transfer from|internal transfer"
+      - "zelle|venmo|cash app|wise|revolut top-?up"
+      - "credit card payment|card payment - thank you|autopay"
+
+  - category: Rent & Mortgage
+    match:
+      - "rent|landlord|property mgmt|mortgage"
+
+  - category: Utilities
+    match:
+      - "electric|energy|power co|gas co|water|utilit"
+      - "comcast|xfinity|spectrum|verizon|at&t|t-mobile|vodafone|ee limited"
+      - "internet|broadband"
+
+  - category: Subscriptions
+    match:
+      - "netflix|spotify|hulu|disney|hbo|max\\b|paramount|peacock"
+      - "youtube premium|apple music|audible|kindle unlimited"
+      - "google one|icloud|dropbox|notion|figma|canva"
+      - "new york times|economist|substack|medium"
+      - "openai|anthropic|github|midjourney"
+      - "gym|fitness|planet fitness|equinox|classpass|peloton"
+
+  - category: Groceries
+    match:
+      - "whole foods|trader joe|safeway|kroger|publix|aldi|lidl"
+      - "tesco|sainsbury|asda|morrisons|waitrose|co-?op food"
+      - "grocer|supermarket|food market|wegmans|heb\\b|costco|sam's club"
+
+  - category: Dining
+    match:
+      - "restaurant|cafe|coffee|bistro|grill|kitchen|pizzeria|taqueria"
+      - "starbucks|blue bottle|dunkin|peet|costa|pret"
+      - "mcdonald|burger|pizza|chipotle|sweetgreen|subway sandwich|kfc|taco bell"
+      - "doordash|uber eats|grubhub|deliveroo|just eat|postmates|seamless"
+      - "bar\\b|pub\\b|brewery|tavern"
+
+  - category: Transport
+    match:
+      - "uber(?! eats)|lyft|taxi|cab\\b"
+      - "transport for london|tfl|mta|bart|caltrain|amtrak|metro|transit"
+      - "shell|chevron|exxon|bp\\b|texaco|petrol|gas station|fuel"
+      - "parking|toll|ez ?pass|garage"
+
+  - category: Travel
+    match:
+      - "airlines|airways|air canada|ryanair|easyjet|delta|united air|jetblue"
+      - "hotel|inn\\b|hostel|airbnb|booking\\.com|expedia|marriott|hilton"
+      - "rental car|hertz|avis|enterprise rent"
+
+  - category: Shopping
+    match:
+      - "amazon|ebay|etsy|target|walmart|best buy|argos|john lewis"
+      - "ikea|home depot|lowes|b&q|wayfair"
+      - "h&m|zara|uniqlo|nike|adidas|asos|primark|tj maxx|nordstrom"
+
+  - category: Health
+    match:
+      - "pharmacy|cvs|walgreens|boots|rite aid|chemist"
+      - "dental|dentist|clinic|medical|doctor|hospital|optician|physio"
+      - "insurance|health plan|bcbs|aetna|cigna|kaiser"
+
+  - category: Entertainment
+    match:
+      - "cinema|movie|theatre|theater|amc\\b|odeon|vue\\b|regal"
+      - "spotify|steam|playstation|xbox|nintendo|epic games"
+      - "ticketmaster|eventbrite|dice\\b|stubhub"
+
+  - category: Education
+    match:
+      - "university|college|tuition|coursera|udemy|pluralsight|duolingo"
+      - "bookstore|book shop|waterstones|barnes"
+
+  - category: Fees & Charges
+    match:
+      - "fee|charge|overdraft|interest charged|atm withdrawal|foreign transaction"
+      - "service charge|maintenance fee|late payment"
+
+  - category: Cash
+    field: description
+    match:
+      - "atm|cash withdrawal|cashpoint"

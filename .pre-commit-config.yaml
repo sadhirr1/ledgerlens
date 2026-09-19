@@ -1,0 +1,30 @@
+# Install once with:  pre-commit install
+#
+# The local hook below is the one that matters: this project's whole premise is
+# that your statements stay on your machine, and the easiest way to break that
+# promise is an absent-minded `git add .` in the folder you were testing with.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=2000]
+      - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: local
+    hooks:
+      - id: block-financial-data
+        name: block real financial data
+        entry: python scripts/check_no_real_data.py
+        language: system
+        pass_filenames: true
+        always_run: false
