@@ -8,9 +8,10 @@
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2.svg)](https://modelcontextprotocol.io)
 
 LedgerLens is a [Model Context Protocol](https://modelcontextprotocol.io) server that
-points at a folder of bank and credit card CSV exports and makes them queryable in
-plain language. No API keys, no bank logins, no third-party service — it reads the
-files you already have and keeps everything in a local SQLite database.
+points at a folder of bank and credit card statements — **CSV or PDF** — and makes
+them queryable in plain language. No API keys, no bank logins, no third-party
+service. It reads the files you already have and keeps everything in a local
+SQLite database.
 
 ```
 You:    What subscriptions am I paying for?
@@ -35,6 +36,13 @@ doesn't need one: your bank already gives you the data as a CSV download. The ha
 part was never getting the data — it's that every bank exports something different,
 and none of it is in a shape you can ask questions about.
 
+A PDF statement in particular *looks* like a table and isn't one. The file records
+"draw the text `$17.03` at x=531, y=138"; the columns you see are an artifact of
+where the ink landed. And even a perfectly structured statement can only ever
+describe one month, while every question worth asking — what do my subscriptions
+cost a year, am I spending more than last quarter, what am I still paying for —
+lives *across* statements.
+
 That's what this is: the boring, careful layer between "a folder of messy CSVs" and
 "a question about your money."
 
@@ -44,7 +52,8 @@ That's what this is: the boring, careful layer between "a folder of messy CSVs" 
 pip install ledgerlens          # or: uv tool install ledgerlens
 ```
 
-Download your statements as CSV from your bank into a folder, then:
+Download your statements into a folder — CSV if your bank offers it, PDF if it
+doesn't — then:
 
 ```bash
 ledgerlens import ~/Statements
@@ -168,6 +177,53 @@ slice it thinks is everything. `get_transactions` is the only line-item tool and
 refuses to return more than 200 rows — a tool that *can* flood a context window
 eventually will.
 
+### A PDF is a picture of a table, not a table
+
+CSV is the reliable path, but plenty of issuers only offer PDFs, so those are
+supported too — and they are considerably harder, because the table has to be
+reconstructed from text positions.
+
+**Telling transactions from everything else.** A statement is full of numbers that
+aren't transactions: a summary block totalling the section below it, a fees line, an
+APR table, the closing date in the page header. Requiring that a row *begin* with a
+date and carry an amount in the right-hand money column removes nearly all of them —
+`Total Payments and Credits -$340.68` has no date, and
+`Purchases 07/31/2023 28.49% (v) $0.00` has one but not in first position.
+
+**Credit cards invert the sign convention.** On a card, a purchase prints as
+*positive* and your monthly payment as *negative* — the opposite of a current
+account. Read one as the other and you record paying your bill as spending, and
+your actual spending as income. The truth is stated outright in the section
+headings ("New Charges", "Payments and Credits"), so the extractor tracks section
+state as it walks the document and normalizes the sign itself rather than leaving a
+later stage to guess from the numbers.
+
+Getting this subtly wrong is easy: the printed sign *restates* the heading's
+direction rather than modifying it, so applying both inverts everything. Each
+section's majority printed sign is taken as its normal, and only minority rows — a
+refund sitting among the charges — flip.
+
+**Statements are laid out Section → Summary → Detail**, and the detail resumes on
+later pages under "Detail Continued". Skipping the summary is right; forgetting to
+stop skipping silently drops most of the statement.
+
+**The extraction checks its own work.** Reading a PDF is a reconstruction, and its
+failures are silent — a dropped page, a row absorbed into the one above, an
+inverted sign. But the statement already states what its sections add up to, so
+LedgerLens sums what it extracted and compares:
+
+```
+amex_2026-09.pdf   35 imported, 0 skipped
+  ✓ reconciles against the statement's own printed totals
+    (in statement 340.68, extracted 340.68; out statement 587.10, extracted 587.10)
+```
+
+When those figures match, the result isn't merely plausible — it's arithmetically
+consistent with what the issuer printed. When they don't, you get a warning saying
+so and by how much, rather than a confident wrong answer. Scans with no text layer
+are rejected with a pointer to OCR; password-protected files say so and tell you
+where to put the password.
+
 ### Re-importing must be safe
 
 People re-download overlapping ranges constantly: January–March, then February–April.
@@ -232,6 +288,7 @@ day_first: true          # resolve ambiguous dates as DD/MM
 negative_is_outflow: true
 currency: GBP
 skip_rows: 3             # junk above the header
+pdf_password: hunter2    # for a locked PDF statement
 ```
 
 Categories come from a [shipped rule pack](src/ledgerlens/rules/default_categories.yaml).
@@ -263,7 +320,13 @@ European decimal commas, `windows-1252` bytes, preamble above the header, unsign
 amounts with a DR/CR column, parenthesised negatives, genuinely ambiguous dates — and
 **subscriptions planted with known cadence, amount and end date**, so the detector's
 tests assert against ground truth rather than against whatever it happened to output
-when the test was written. CI checks the generator and the fixtures haven't drifted
+when the test was written.
+
+The PDF fixtures are generated too, and reproduce the structures that matter: a
+card statement with the summary/detail split, inverted signs, detail continuing
+across a page break, metadata lines under each charge, a year-to-date block and an
+APR table; a bank statement drawn as a ruled grid with a running-balance column; and
+a page with no text layer at all. CI checks the generator and the fixtures haven't drifted
 apart.
 
 ## Contributing

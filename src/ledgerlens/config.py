@@ -51,6 +51,7 @@ class DialectOverride:
     negative_is_outflow: bool | None = None
     account_name: str | None = None
     currency: str | None = None
+    pdf_password: str | None = None
     skip_rows: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 

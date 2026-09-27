@@ -27,6 +27,7 @@ categories:
       - "transfer to|transfer from|internal transfer"
       - "zelle|venmo|cash app|wise|revolut top-?up"
       - "credit card payment|card payment - thank you|autopay"
+      - "mobile payment|payment\\s*-\\s*thank you|online payment - thank"
 
   - category: Rent & Mortgage
     match:
@@ -65,6 +66,7 @@ categories:
     match:
       - "uber(?! eats)|lyft|taxi|cab\\b"
       - "transport for london|tfl|mta|bart|caltrain|amtrak|metro|transit"
+      - "clipper|muni|vta\\b|septa|translink|oyster"
       - "shell|chevron|exxon|bp\\b|texaco|petrol|gas station|fuel"
       - "parking|toll|ez ?pass|garage"
 

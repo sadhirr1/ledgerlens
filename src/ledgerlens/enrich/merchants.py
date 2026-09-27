@@ -24,6 +24,13 @@ _PREFIXES = [
     # fragment has to go before anything else can find the name.
     r"authorized\s+on\s+\d{1,2}[/-]\d{1,2}\s*",
     r"sq\s*\*", r"tst\s*\*", r"sp\s+", r"pp\s*\*", r"paypal\s*\*",
+    # Wallet and tap-to-pay prefixes. These nest: a Google Pay tap at a
+    # Toast-using restaurant arrives as "GglPay TST* THE CAFE", so two prefixes
+    # have to come off before the merchant is reachable — which is why
+    # _strip_prefixes loops instead of passing once.
+    r"gglpay\s*\*?\s*", r"g(?:oogle)?\s*pay\s*\*?\s*", r"google\s*\*\s*",
+    r"apple\s*pay\s*\*?\s*", r"samsung\s*pay\s*\*?\s*",
+    r"venmo\s*\*", r"cash\s*app\s*\*", r"zelle\s*\*",
     r"pos\s+debit\s*-?\s*", r"pos\s+purchase\s*-?\s*", r"pos\s+",
     r"debit\s+card\s+purchase\s*-?\s*", r"checkcard\s*\d*\s*",
     r"recurring\s+payment\s*-?\s*", r"ach\s+(debit|credit)\s*-?\s*",

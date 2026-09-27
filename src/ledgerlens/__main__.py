@@ -41,6 +41,8 @@ def cmd_import(args: argparse.Namespace) -> int:
             f"{r.rows_inserted} imported, {r.rows_skipped} skipped"
         )
         print(f"{Path(r.path).name:<34} {state}")
+        for note in r.notes:
+            print(f"  \u2713 {note}")
         for warning in r.warnings:
             print(f"  ! {warning}")
         for err in r.errors[:3]:

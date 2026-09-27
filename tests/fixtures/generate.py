@@ -262,7 +262,275 @@ def main() -> None:
     write_credit_union(rows)
     write_ambiguous_dates()
     write_overlap(rows)
-    print(f"wrote {len(list(HERE.glob('*.csv')))} fixtures from {len(rows)} ledger rows")
+    write_card_statement_pdf()
+    write_bank_statement_pdf()
+    write_scanned_pdf()
+    n_csv = len(list(HERE.glob('*.csv')))
+    n_pdf = len(list(HERE.glob('*.pdf')))
+    print(f'wrote {n_csv} CSV and {n_pdf} PDF fixtures from {len(rows)} ledger rows')
+
+
+
+
+# ---------------------------------------------------------------------------
+# PDF fixtures
+# ---------------------------------------------------------------------------
+#
+# These mirror the structures found in real statements, because the real
+# statement they were modelled on cannot live in a public repository:
+#
+# * A card statement's transactions are split across "Summary" and "Detail"
+#   blocks, and the detail resumes on later pages under "Detail Continued".
+#   A parser that treats "Summary" as a section to skip loses every charge
+#   after it unless something reopens the section.
+# * A card prints purchases POSITIVE and your payment NEGATIVE — the opposite
+#   of a current account. Reading one as the other inverts every figure.
+# * Issuers add metadata lines under each charge (a phone number, a city, a
+#   category hint) that must not become part of the merchant name.
+# * The statement states its own section totals, which lets an extraction be
+#   checked arithmetically rather than eyeballed.
+#
+# reportlab's invariant mode is required: without it each run embeds a new
+# timestamp and document id, and the committed fixtures would never match.
+
+CARD_PAYMENTS = [
+    ("08/03/26*", "Mobile Payment - Thank You", 20.12),
+    ("08/20/26*", "Mobile Payment - Thank You", 305.00),
+]
+CARD_CREDITS = [("08/16/26", "AMAZON PRIME AMZN.COM WA", 0.57, "Seattle")]
+CARD_CHARGES = [
+    ("08/04/26", "NETFLIX.COM 866-579-7172 CA", 15.99, "Entertainment"),
+    ("08/05/26", "SQ *BLUE BOTTLE #4412 OAKLAND CA", 6.25, "408-746-5966"),
+    ("08/07/26", "SPOTIFY USA NEW YORK NY", 11.99, "Subscription"),
+    ("08/09/26", "WHOLEFDS MKT #10238 OAKLAND CA", 84.31, "Grocery"),
+    ("08/11/26", "UBER TRIP HELP.UBER.COM CA", 25.32, "4EWR3XF 94043"),
+    ("08/14/26", "TST* SWEETGREEN 0184 NEW YORK NY", 18.40, "sweetgreen.com/rewards"),
+    ("08/16/26", "AMZN Mktp US*2H4XY9DK3 AMZN.COM/BILL WA", 17.03, "Bill Supplies"),
+    ("08/19/26", "SHELL OIL 57442890 SAN JOSE CA", 47.88, "+14152360599"),
+    ("08/22/26", "TRADER JOE'S #182 BERKELEY CA", 62.40, "Grocery"),
+    ("08/24/26", "PLANET FITNESS CLUB FEES 800-1234567 NH", 24.99, "Membership"),
+    ("08/26/26", "MCDONALD'S F1234 SAN JOSE CA", 9.42, "Restaurant"),
+    ("08/28/26", "TARGET 00012345 EMERYVILLE CA", 103.77, "530-541-5160"),
+    ("08/30/26", "GITHUB.COM HTTPSGITHUB.C CA", 84.00, "Software"),
+    ("09/01/26", "DOORDASH*CHIPOTLE SAN FRANCISCO CA", 31.15, "Restaurant"),
+]
+
+
+def _card_total(rows) -> float:
+    return round(sum(r[2] for r in rows), 2)
+
+
+def write_card_statement_pdf() -> None:
+    """A card statement: summary/detail split, inverted signs, metadata lines."""
+    from reportlab.pdfgen import canvas
+
+    path = HERE / "card_statement.pdf"
+    c = canvas.Canvas(str(path), pagesize=(648, 792), invariant=1)
+    c.setTitle("Statement")
+
+    x_date, x_desc, x_right = 50, 101, 560
+    payments_total = _card_total(CARD_PAYMENTS) + _card_total(CARD_CREDITS)
+    charges_total = _card_total(CARD_CHARGES)
+
+    def header(page_no: int, pages: int) -> float:
+        c.setFont("Helvetica", 8)
+        c.drawString(58, 765, "AVERY Q SAMPLE")
+        c.drawString(262, 765, "Account Ending 0-00000")
+        c.drawString(511, 762, f"p. {page_no}/{pages}")
+        c.drawString(94, 748, "Closing Date 09/02/26")
+        return 720.0
+
+    def money(y: float, text: str) -> None:
+        c.setFont("Helvetica", 8)
+        c.drawRightString(x_right, y, text)
+
+    def row(y: float, date: str, desc: str, amount: str, meta: str | None) -> float:
+        c.setFont("Helvetica", 8)
+        # The date and amount sit on a very slightly different baseline from the
+        # description, exactly as they do in a real statement. A parser that
+        # clusters words by vertical position with a tight tolerance splits every
+        # transaction here into two rows.
+        c.drawString(x_date, y - 1.1, date)
+        c.drawString(x_desc, y, desc)
+        c.drawRightString(x_right, y - 1.1, amount)
+        y -= 11.4
+        if meta:
+            c.setFont("Helvetica", 7)
+            c.drawString(x_desc, y, meta)
+            y -= 12.1
+        return y
+
+    # ---- page 1: payments and credits, then the New Charges summary ----
+    y = header(1, 2)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(58, y, "Payments and Credits")
+    y -= 18
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Summary")
+    y -= 14
+    c.drawRightString(x_right, y, "Total")
+    y -= 14
+    c.setFont("Helvetica", 8)
+    c.drawString(50, y, "Payments")
+    money(y, f"-${_card_total(CARD_PAYMENTS):,.2f}")
+    y -= 12
+    c.drawString(50, y, "Credits")
+    money(y, f"-${_card_total(CARD_CREDITS):,.2f}")
+    y -= 12
+    c.drawString(50, y, "Total Payments and Credits")
+    money(y, f"-${payments_total:,.2f}")
+    y -= 20
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Detail")
+    y -= 14
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawString(101, y, "*Indicates posting date")
+    y -= 14
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(50, y, "Payments")
+    c.drawRightString(x_right, y, "Amount")
+    y -= 14
+    for txn_date, desc, amount in CARD_PAYMENTS:
+        y = row(y, txn_date, desc, f"-${amount:,.2f}", None)
+
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(50, y, "Credits")
+    c.drawRightString(x_right, y, "Amount")
+    y -= 14
+    for txn_date, desc, amount, meta in CARD_CREDITS:
+        y = row(y, txn_date, desc, f"-${amount:,.2f}", meta)
+
+    y -= 10
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(58, y, "New Charges")
+    y -= 18
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Summary")
+    y -= 14
+    c.setFont("Helvetica", 8)
+    c.drawString(50, y, "Total New Charges")
+    money(y, f"${charges_total:,.2f}")
+    y -= 20
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Detail")
+    y -= 14
+    c.setFont("Helvetica-Bold", 8)
+    c.drawRightString(x_right, y, "Amount")
+    y -= 14
+    split_at = 6
+    for txn_date, desc, amount, meta in CARD_CHARGES[:split_at]:
+        y = row(y, txn_date, desc, f"${amount:,.2f}", meta)
+    c.setFont("Helvetica-Oblique", 7)
+    c.drawString(479, 40, "Continued on next page")
+    c.showPage()
+
+    # ---- page 2: the detail resumes, then fees ----
+    y = header(2, 2)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Detail Continued")
+    y -= 14
+    c.setFont("Helvetica-Bold", 8)
+    c.drawRightString(x_right, y, "Amount")
+    y -= 14
+    for txn_date, desc, amount, meta in CARD_CHARGES[split_at:]:
+        y = row(y, txn_date, desc, f"${amount:,.2f}", meta)
+
+    y -= 10
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Fees")
+    y -= 14
+    c.setFont("Helvetica", 8)
+    c.drawString(50, y, "Total Fees for this Period")
+    money(y, "$0.00")
+    y -= 24
+
+    # A year-to-date block, whose totals cover other statements and must not be
+    # mistaken for this one's.
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "2026 Fees and Interest Totals Year-to-Date")
+    y -= 14
+    c.setFont("Helvetica", 8)
+    c.drawString(58, y, "Total Fees in 2026")
+    money(y, "$142.00")
+    y -= 12
+    c.drawString(58, y, "Total Interest in 2026")
+    money(y, "$0.00")
+    y -= 24
+
+    # An APR table: a row that carries both a date and money, but is not a
+    # transaction, and whose date is not the first thing on the line.
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(236, y, "Transactions Dates Annual Balance Interest")
+    y -= 14
+    c.setFont("Helvetica", 8)
+    c.drawString(54, y, "Purchases 07/31/2023 28.49% (v) $0.00 $0.00")
+    y -= 12
+    c.drawString(54, y, "Cash Advances 07/31/2023 28.74% (v) $0.00 $0.00")
+    c.save()
+
+
+def write_bank_statement_pdf() -> None:
+    """A bank statement drawn as a ruled grid, with a running balance column."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    path = HERE / "bank_statement_ruled.pdf"
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(str(path), pagesize=letter, invariant=1, title="Statement")
+
+    data = [["Date", "Description", "Paid Out", "Paid In", "Balance"]]
+    balance = 2500.00
+    entries = [
+        ("01/03/2026", "ACME CORP DIRECT DEP PAYROLL", None, 2841.66),
+        ("02/03/2026", "NETFLIX.COM 866-579-7172 CA", 15.99, None),
+        ("05/03/2026", "WHOLEFDS MKT #10238 OAKLAND CA", 91.244, None),
+        ("13/03/2026", "TFL TRAVEL CHARGE TFL.GOV.UK/CP", 18.50, None),
+        ("17/03/2026", "SPOTIFY USA NEW YORK NY", 11.99, None),
+        ("25/03/2026", "SHELL OIL 57442890 SAN JOSE CA", 52.10, None),
+    ]
+    for entry_date, desc, out, inn in entries:
+        out = round(out, 2) if out else None
+        balance += (inn or 0) - (out or 0)
+        data.append([
+            entry_date, desc,
+            f"{out:,.2f}" if out else "",
+            f"{inn:,.2f}" if inn else "",
+            f"{balance:,.2f}",
+        ])
+
+    table = Table(data, colWidths=[62, 230, 58, 58, 62])
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+    ]))
+
+    doc.build([
+        Paragraph("Statement of Account", styles["Heading2"]),
+        Paragraph("Sort code 00-00-00 &bull; Account 12345678", styles["Normal"]),
+        Spacer(1, 12),
+        table,
+    ])
+
+
+def write_scanned_pdf() -> None:
+    """A page with no text layer at all, as a scan or photo of a statement is."""
+    from reportlab.pdfgen import canvas
+
+    path = HERE / "scanned_no_text.pdf"
+    c = canvas.Canvas(str(path), invariant=1)
+    c.setTitle("Scan")
+    # Draw shapes only: visually a page, but containing no extractable text.
+    c.rect(72, 600, 468, 120, fill=0)
+    for i in range(12):
+        c.line(80, 590 - i * 18, 520, 590 - i * 18)
+    c.save()
 
 
 if __name__ == "__main__":

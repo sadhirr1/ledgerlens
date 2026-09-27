@@ -164,8 +164,15 @@ def test_unsigned_spend_only_export_warns_about_the_assumption(conn, fixtures):
 
 
 def test_import_folder_reads_every_statement(conn, fixtures):
+    from ledgerlens.ingest.loader import DATA_SUFFIXES
+
+    expected = [
+        p
+        for p in fixtures.iterdir()
+        if p.is_file() and p.suffix.lower() in DATA_SUFFIXES and p.name != "ledgerlens.yaml"
+    ]
     results = import_folder(conn, fixtures)
-    assert len(results) == 8
+    assert len(results) == len(expected)
     assert transaction_count(conn) > 2000
 
 

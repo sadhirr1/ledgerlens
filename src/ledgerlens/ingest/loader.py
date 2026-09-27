@@ -30,14 +30,17 @@ from ledgerlens.enrich.categories import CategoryEngine
 from ledgerlens.enrich.merchants import normalize_merchant
 from ledgerlens.ingest.amounts import (
     AmountParseError,
+    SignPlan,
     infer_sign_plan,
     parse_magnitude,
     signed_cents,
 )
 from ledgerlens.ingest.dates import DateParseError, resolve_date_format
 from ledgerlens.ingest.dialect import Dialect, DialectError, detect_dialect, read_rows
+from ledgerlens.ingest.pdf import PdfExtractionError
+from ledgerlens.ingest.pdf import extract as pdf_extract
 
-DATA_SUFFIXES = {".csv", ".tsv", ".txt"}
+DATA_SUFFIXES = {".csv", ".tsv", ".txt", ".pdf"}
 _WS = re.compile(r"\s+")
 
 
@@ -52,6 +55,7 @@ class ImportResult:
     rows_skipped: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     dialect: dict[str, object] = field(default_factory=dict)
     already_imported: bool = False
 
@@ -64,6 +68,7 @@ class ImportResult:
             "rows_skipped": self.rows_skipped,
             "already_imported": self.already_imported,
             "warnings": self.warnings,
+            "notes": self.notes,
             "errors": self.errors[:5],
             "error_count": len(self.errors),
         }
@@ -147,15 +152,12 @@ def import_file(
             return result
 
     try:
-        dialect = detect_dialect(path, skip_rows=override.skip_rows)
-    except DialectError as exc:
+        rows, dialect, forced_sign_plan = _read_source(path, override, result)
+    except (DialectError, PdfExtractionError) as exc:
         result.errors.append(str(exc))
         return result
 
-    _apply_override(dialect, override)
-    rows = read_rows(path, dialect)
     result.rows_read = len(rows)
-    result.dialect = dialect.to_dict()
     if not rows:
         result.warnings.append("file has a header but no data rows")
         return result
@@ -190,7 +192,10 @@ def import_file(
             except AmountParseError:
                 continue
 
-    sign_plan = infer_sign_plan(
+    # A PDF extractor works out direction from the statement's own section
+    # headings, which state it outright; that beats inferring it from the
+    # numbers, so its conclusion is taken as given.
+    sign_plan = forced_sign_plan or infer_sign_plan(
         has_debit_credit=dialect.has_debit_credit,
         signed_samples=signed_samples,
         type_samples=[str(r.get(type_col, "")) for r in rows] if type_col else None,
@@ -301,6 +306,54 @@ def recategorize(conn: sqlite3.Connection, engine: CategoryEngine | None = None)
             changed += 1
     conn.commit()
     return {"examined": len(rows), "changed": changed}
+
+
+def _read_source(
+    path: Path, override: DialectOverride, result: ImportResult
+) -> tuple[list[dict[str, str]], Dialect, SignPlan | None]:
+    """Read a statement file into rows, whatever format it arrived in.
+
+    Both formats converge on the same shape — a list of row dicts plus a mapping
+    of roles to column names — so everything downstream (date resolution,
+    merchant normalization, categorization, dedup) is shared rather than written
+    twice and drifting apart.
+    """
+    if path.suffix.lower() == ".pdf":
+        extraction = pdf_extract(path, password=override.pdf_password)
+        result.warnings.extend(extraction.warnings)
+        result.dialect = extraction.to_dict()
+
+        dialect = Dialect(
+            encoding="pdf",
+            delimiter="",
+            header_row=0,
+            columns=dict(extraction.columns),
+            header=list(extraction.columns.values()),
+        )
+        _apply_override(dialect, override)
+
+        forced = None
+        if extraction.pre_signed:
+            forced = SignPlan(
+                mode="signed",
+                negative_is_outflow=True,
+                confidence=1.0,
+                reason=(
+                    "direction taken from the statement's own section headings "
+                    f"({', '.join(extraction.sections_seen) or 'none found'})"
+                ),
+            )
+        if extraction.reconciled:
+            detail = "; ".join(f"{k} {v}" for k, v in extraction.reconciliation.items())
+            result.notes.append(
+                f"reconciles against the statement's own printed totals ({detail})"
+            )
+        return extraction.rows, dialect, forced
+
+    dialect = detect_dialect(path, skip_rows=override.skip_rows)
+    _apply_override(dialect, override)
+    result.dialect = dialect.to_dict()
+    return read_rows(path, dialect), dialect, None
 
 
 def _apply_override(dialect: Dialect, override: DialectOverride) -> None:
