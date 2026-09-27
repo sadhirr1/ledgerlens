@@ -2,7 +2,7 @@
 
 **Ask an AI about your actual spending — without your bank statements leaving your machine.**
 
-[![CI](https://github.com/sadhirr/ledgerlens/actions/workflows/ci.yml/badge.svg)](https://github.com/sadhirr/ledgerlens/actions/workflows/ci.yml)
+[![CI](https://github.com/sadhirr1/ledgerlens/actions/workflows/ci.yml/badge.svg)](https://github.com/sadhirr1/ledgerlens/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2.svg)](https://modelcontextprotocol.io)
@@ -26,6 +26,10 @@ Claude: You have 4 active recurring charges costing $1,227/year:
         One looks cancelled: Planet Fitness, $24.99/month. Last charged
         2 Jan 2026 and nothing since — you're no longer paying for it.
 ```
+
+> **[Decisions](DECISIONS.md)** — who this is for, the alternatives I rejected,
+> and what each design choice cost. Read that if you care more about the
+> reasoning than the code.
 
 ---
 
@@ -307,7 +311,7 @@ Then `ledgerlens categories --apply` to update existing transactions.
 ## Development
 
 ```bash
-git clone https://github.com/sadhirr/ledgerlens
+git clone https://github.com/sadhirr1/ledgerlens
 cd ledgerlens
 pip install -e ".[dev]"
 pytest
