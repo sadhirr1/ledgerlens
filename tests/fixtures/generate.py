@@ -1,6 +1,8 @@
 """Generate synthetic statement fixtures.
 
-No real financial data is in this repository and none should ever be. These
+No real financial data is in this repository and none should ever be. Names,
+account numbers and merchants here are invented; when modelling a fixture on a
+real statement's *layout*, copy the structure and never the identifiers. These
 fixtures are produced from a seeded RNG, so the output is byte-stable across
 runs and machines, and the generated files are committed — a fresh clone can
 run the tests without executing this script.
@@ -200,8 +202,8 @@ def write_amex_preamble(rows: list[tuple[date, str, float]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["Prepared for"])
-        w.writerow(["A SAMPLE"])
-        w.writerow(["Account ending", "XXXX-XXXXX1-00000"])
+        w.writerow(["A SAMPLE CARDHOLDER"])
+        w.writerow(["Account ending", "XXXX-XXXXX0-00000"])
         w.writerow([])
         w.writerow(["Date", "Description", "Amount"])
         for day, desc, amount in subset:
@@ -334,7 +336,7 @@ def write_card_statement_pdf() -> None:
 
     def header(page_no: int, pages: int) -> float:
         c.setFont("Helvetica", 8)
-        c.drawString(58, 765, "AVERY Q SAMPLE")
+        c.drawString(58, 765, "A SAMPLE CARDHOLDER")
         c.drawString(262, 765, "Account Ending 0-00000")
         c.drawString(511, 762, f"p. {page_no}/{pages}")
         c.drawString(94, 748, "Closing Date 09/02/26")
