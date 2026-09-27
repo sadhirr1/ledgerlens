@@ -49,6 +49,24 @@ jobs:
           python tests/fixtures/generate.py
           git diff --exit-code -- tests/fixtures
 
+  sdk-compat:
+    # The MCP SDK renamed FastMCP to MCPServer in 2.0. The server supports both,
+    # and this job is what keeps that true: the matrix above always resolves to
+    # the newest SDK, so without this nothing would ever exercise the 1.x path.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install with the previous SDK generation
+        run: |
+          pip install -e ".[dev]"
+          pip install "mcp<2"
+      - name: Test against mcp 1.x
+        run: pytest
+
   no-real-data:
     runs-on: ubuntu-latest
     steps:

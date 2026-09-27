@@ -16,7 +16,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+try:  # mcp >= 2.0
+    from mcp.server.mcpserver import MCPServer as _Server
+except ImportError:  # mcp 1.x, where the same class was called FastMCP
+    from mcp.server.fastmcp import FastMCP as _Server
 
 from ledgerlens import query
 from ledgerlens.config import db_path, user_rules_path
@@ -25,7 +28,10 @@ from ledgerlens.enrich.categories import CategoryEngine
 from ledgerlens.enrich.recurring import detect_subscriptions
 from ledgerlens.ingest import import_file, import_folder, recategorize
 
-mcp = FastMCP("ledgerlens")
+# The MCP SDK renamed FastMCP to MCPServer in 2.0. The decorator, the tool
+# registry and run() are otherwise unchanged, so one alias covers both and the
+# server keeps working whichever generation of the SDK a user has installed.
+mcp = _Server("ledgerlens")
 
 
 def _engine() -> CategoryEngine:

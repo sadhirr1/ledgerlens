@@ -45,8 +45,13 @@ def test_every_tool_is_documented(tools):
 
 
 def test_every_tool_advertises_a_schema(tools):
+    # The SDK renamed this field from inputSchema to input_schema in 2.0; the
+    # contract being tested — that every tool declares an object schema — is the
+    # same either way.
     for name, tool in tools.items():
-        assert tool.inputSchema.get("type") == "object", name
+        schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
+        assert schema is not None, f"{name} advertises no input schema"
+        assert schema.get("type") == "object", name
 
 
 def test_import_then_query_round_trip(home, fixtures):

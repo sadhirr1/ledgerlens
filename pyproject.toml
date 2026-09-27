@@ -31,6 +31,10 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "ruff>=0.5",
+    # Only used to build the PDF fixtures and to exercise the failure paths;
+    # not needed to run the server.
+    "reportlab>=4.0",
+    "pypdf>=4.0",
 ]
 
 [project.scripts]
