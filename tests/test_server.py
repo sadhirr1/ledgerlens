@@ -144,8 +144,10 @@ def test_foreign_transaction_costs_tool(home, fixtures):
     server.import_statements(str(fixtures / "travel_statement.pdf"))
     result = server.foreign_transaction_costs()
     assert result["foreign_transaction_fees"] > 0
-    assert len(result["poor_conversions"]) == 1
-    assert result["poor_conversions"][0]["worse_by_percent"] > 3
+    assert result["suspected_conversion_count"] == 1
+    suspect = result["suspected_point_of_sale_conversions"][0]
+    assert suspect["foreign_fee_charged"] is True
+    assert suspect["cost"] is None, "there is no local amount to price it against"
 
 
 def test_travel_tools_are_quiet_on_a_domestic_only_database(home, fixtures):

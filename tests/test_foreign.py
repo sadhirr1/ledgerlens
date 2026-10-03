@@ -21,7 +21,11 @@ from ledgerlens.enrich.foreign import (
     parse_fx_rate,
     strip_fx_fragments,
 )
-from ledgerlens.enrich.travel import detect_trips, find_poor_conversions, foreign_cost_summary
+from ledgerlens.enrich.travel import (
+    detect_trips,
+    find_point_of_sale_conversions,
+    foreign_cost_summary,
+)
 from ledgerlens.ingest import import_file
 from ledgerlens.query import spending_by_country, travel_rows
 
@@ -203,37 +207,75 @@ def test_fees_are_attributed_to_the_trip_they_fall_in(travelled):
     assert all(t.fee_cents > 0 for t in trips)
 
 
-def test_the_bad_conversion_is_found(travelled, spec):
-    planted = next(t["poor"] for t in spec.TRIPS if t["poor"])
-    _day, descriptor, _local, bad_rate = planted
+def test_a_point_of_sale_conversion_is_found(travelled, spec):
+    """DCC is identified by what is *missing*, not by a bad rate.
 
-    poor = find_poor_conversions(travel_rows(travelled))
-    assert len(poor) == 1, f"exactly one conversion was planted; got {poor}"
-    found = poor[0]
-    assert found.rate == pytest.approx(bad_rate, rel=1e-3)
-    assert descriptor.upper().startswith(found.merchant.upper().split()[0])
-    assert found.extra_cost_cents > 0
+    When a cardholder accepts conversion at the till the transaction reaches the
+    issuer already in the home currency, so the issuer has nothing to convert and
+    prints no local amount and no rate. Mastercard's merchant guide says so
+    outright. A detector that compares rates between transactions is therefore
+    looking only at the charges that were *not* converted at the till, and can
+    never see one.
+    """
+    planted = next(t["dcc"] for t in spec.TRIPS if t["dcc"])
+    _day, descriptor, billed = planted
 
-
-def test_good_conversions_are_left_alone(travelled):
-    """Everything converted at the ordinary rate must stay unflagged."""
-    poor = find_poor_conversions(travel_rows(travelled))
-    assert {p.currency for p in poor} == {"BRL"}
-
-
-def test_a_currency_with_too_few_samples_is_not_judged(travelled):
-    """One GBP transaction cannot establish what a normal GBP rate looks like."""
-    poor = find_poor_conversions(travel_rows(travelled))
-    assert "GBP" not in {p.currency for p in poor}
+    found = find_point_of_sale_conversions(travel_rows(travelled))
+    assert len(found) == 1, f"one was planted; got {found}"
+    suspect = found[0]
+    assert suspect.billed_cents == round(billed * 100)
+    assert descriptor.upper().startswith(suspect.merchant.upper().split()[0])
+    assert suspect.country == "BR"
 
 
-def test_cost_summary_adds_up(travelled):
+def test_the_foreign_fee_corroborates_it(travelled):
+    """The issuer charges its fee on where a charge was processed, not on what
+    currency it arrived in. A fee beside a home-currency charge therefore says
+    "this was abroad" while the missing conversion line says "somebody else
+    converted it"."""
+    suspect = find_point_of_sale_conversions(travel_rows(travelled))[0]
+    assert suspect.fee_observed is True
+    assert suspect.confidence >= 0.8
+
+
+def test_a_suspected_conversion_is_never_priced(travelled):
+    """There is no local amount to compare against, so any figure would be made
+    up. The absence is the signal; it is also the reason it cannot be costed."""
+    suspect = find_point_of_sale_conversions(travel_rows(travelled))[0]
+    assert suspect.to_dict()["cost"] is None
+
+    summary = foreign_cost_summary(travel_rows(travelled))
+    assert summary["cost_of_suspected_conversions"] is None
+    assert summary["total_measurable_cost_of_going_abroad"] == summary[
+        "foreign_transaction_fees"
+    ]
+
+
+def test_ordinary_foreign_charges_are_not_suspected(travelled, spec):
+    """Everything that printed its local amount and rate was converted by the
+    card network and must be left alone."""
+    found = find_point_of_sale_conversions(travel_rows(travelled))
+    assert len(found) == 1
+    planted_normal = {c[1] for t in spec.TRIPS for c in t["charges"]}
+    assert not any(
+        any(n.upper().startswith(f.merchant.upper().split()[0]) for n in planted_normal)
+        for f in found
+    )
+
+
+def test_a_foreign_website_order_is_not_a_suspected_conversion(conn, fixtures):
+    """A home-currency charge from a foreign online shop looks identical on the
+    statement, and nobody chose a currency at a terminal. Scoping detection to
+    inside a trip is what separates them."""
+    import_file(conn, fixtures / "travel_statement.pdf")
+    found = find_point_of_sale_conversions(travel_rows(conn))
+    assert not any("Bookshop" in f.merchant for f in found)
+
+
+def test_cost_summary_reports_only_what_it_can_measure(travelled):
     summary = foreign_cost_summary(travel_rows(travelled))
     assert summary["foreign_transaction_fees"] > 0
-    assert summary["lost_to_poor_conversions"] > 0
-    assert summary["total_cost_of_going_abroad"] == pytest.approx(
-        summary["foreign_transaction_fees"] + summary["lost_to_poor_conversions"], abs=0.02
-    )
+    assert summary["suspected_conversion_count"] == 1
     assert set(summary["by_currency"]) == {"BRL", "MXN", "INR", "GBP"}
 
 
@@ -303,16 +345,16 @@ def test_a_csv_without_rates_cannot_check_conversions(csv_without_fx):
     assert availability["can_check_conversions"] is False
 
 
-def test_unavailable_is_reported_as_unknown_not_as_zero(csv_without_fx):
+def test_unavailable_is_reported_as_unknown_not_as_none_found(csv_without_fx):
     """The distinction this whole project is about.
 
-    Reporting 0 would read as "your conversions were fine". The honest answer is
-    that the file never contained the evidence.
+    The signal for a till conversion is a charge missing its conversion line
+    while others have theirs. On an export where *nothing* has one there is no
+    contrast to read, and silence would be mistaken for an all-clear.
     """
     summary = foreign_cost_summary(travel_rows(csv_without_fx))
-    assert summary["lost_to_poor_conversions"] is None
-    assert summary["poor_conversions"] == []
-    assert any("not the same as finding nothing wrong" in n for n in summary["notes"])
+    assert summary["suspected_point_of_sale_conversions"] == []
+    assert any("not the same as finding none" in n for n in summary["notes"])
 
 
 def test_a_pdf_statement_can_check_conversions(travelled):
@@ -321,7 +363,10 @@ def test_a_pdf_statement_can_check_conversions(travelled):
     availability = rate_data_availability(travel_rows(travelled))
     assert availability["can_check_conversions"] is True
     assert set(availability["checkable_currencies"]) == {"BRL", "MXN", "INR"}
-    assert foreign_cost_summary(travel_rows(travelled))["notes"] == []
+    # The only note here is the caveat attached to the finding itself, not a
+    # warning that the check could not run.
+    notes = foreign_cost_summary(travel_rows(travelled))["notes"]
+    assert not any("cannot be spotted" in n for n in notes)
 
 
 def test_fees_are_still_found_without_rate_data(csv_without_fx):
@@ -365,9 +410,12 @@ def test_the_same_statement_as_pdf_recovers_the_lost_trip(conn, fixtures):
     assert "IN" in pdf_countries
 
 
-def test_the_dcc_threshold_catches_a_documented_markup():
-    """Published DCC markups start around 3% (interbank plus 2.95% is a cited
-    example). A threshold above that would miss the cheapest ones."""
-    from ledgerlens.enrich.travel import POOR_RATE_THRESHOLD
+def test_detection_needs_a_statement_that_prints_conversion_lines():
+    """A missing conversion line only means something when other lines have one.
 
-    assert POOR_RATE_THRESHOLD < 0.0295
+    On a statement that never prints them, every foreign charge would otherwise
+    look like a till conversion.
+    """
+    from ledgerlens.enrich.travel import MIN_SIBLINGS_WITH_DETAIL
+
+    assert MIN_SIBLINGS_WITH_DETAIL >= 3

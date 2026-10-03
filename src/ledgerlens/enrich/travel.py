@@ -26,12 +26,29 @@ home currency, you accept, and the merchant's payment processor sets the rate
 instead of your card network. It costs a few percent and nothing on the
 statement says so.
 
-That one is detectable without any rate lookup, which matters because this
-project makes no network calls. Every charge in a given currency implies a rate
-— the local amount divided by what you were billed. Across a trip those land
-tightly together, because they all went through the same card network within days
-of each other. A conversion that was handled by somebody else sits visibly off
-that cluster, and the gap between it and the others is what it cost.
+Detecting it is less obvious than it first appears, and the obvious approach is
+wrong. When DCC is accepted the transaction reaches the issuer **already in the
+cardholder's own currency**, so the issuer has nothing to convert and prints no
+conversion detail at all. Mastercard's merchant guide is explicit: the account is
+"debited using the exchange rate offered by the acquirer", and there are "NO
+currency conversion details on cardholder statement".
+
+So a DCC'd charge carries no local amount and no rate. Comparing implied rates
+between transactions therefore cannot find one — it only ever compares the
+charges that were *not* converted at the till.
+
+What identifies DCC is the absence itself, read in context. On a statement where
+foreign charges normally print their local amount and rate, one that prints only
+a home-currency figure despite an unmistakably foreign merchant is the odd one
+out. A foreign transaction fee sitting beside it corroborates this: the issuer
+treats a charge as foreign based on where it was processed rather than what
+currency it arrived in, so the fee says "this was abroad" while the missing
+detail says "somebody else did the conversion".
+
+It cannot be priced. Without the local amount there is nothing to compare a fair
+rate against, so the honest output is that the charge looks converted at the
+point of sale and that such conversions typically run a few percent above the
+card network's rate — not a figure presented as if it were measured.
 """
 
 from __future__ import annotations
@@ -52,14 +69,16 @@ MIN_TRIP_TRANSACTIONS = 3
 MIN_TRIP_MERCHANTS = 2
 MIN_TRIP_DAYS = 2
 
-# A conversion has to be this much worse than the rest to be worth reporting.
-# Documented dynamic currency conversion markups start around 3% — a commonly
-# cited example is interbank plus 2.95% — and run far higher. A card network's
-# own rate moves well under 1% day to day for a major pair. The threshold sits
-# just below the bottom of the DCC range so the cheapest ones are still caught;
-# the exact percentage is always reported alongside, so a borderline case can be
-# judged rather than taken on trust.
-POOR_RATE_THRESHOLD = 0.025
+# Before concluding that a missing conversion line is meaningful, the statement
+# has to be one that prints conversion lines at all. A few siblings carrying them
+# inside the same trip establishes that.
+MIN_SIBLINGS_WITH_DETAIL = 3
+
+# A charge is matched to its fee by date and proportion; issuers round, so the
+# match is loose.
+FEE_MATCH_TOLERANCE = 0.25
+
+# How many rates are needed before a currency's typical rate is worth reporting.
 MIN_RATES_FOR_COMPARISON = 4
 
 
@@ -104,29 +123,43 @@ class Trip:
 
 
 @dataclass
-class PoorConversion:
-    """A charge converted at a materially worse rate than its neighbours."""
+class SuspectedConversion:
+    """A charge that looks converted at the till rather than by the card network.
+
+    Deliberately not priced. The local amount is absent — that absence is the
+    whole signal — so there is nothing to compute a fair rate against. Reporting
+    a number here would be inventing one.
+    """
 
     merchant: str
     posted_on: date
-    currency: str
-    rate: float
-    typical_rate: float
     billed_cents: int
-    extra_cost_cents: int
+    country: str | None
+    fee_observed: bool
+    siblings_with_detail: int
+    confidence: float
 
     def to_dict(self) -> dict[str, object]:
         return {
             "merchant": self.merchant,
             "date": self.posted_on.isoformat(),
-            "currency": self.currency,
-            "rate_you_got": round(self.rate, 4),
-            "typical_rate": round(self.typical_rate, 4),
             "billed": round(self.billed_cents / 100, 2),
-            "extra_cost": round(self.extra_cost_cents / 100, 2),
-            "worse_by_percent": round(
-                (self.typical_rate - self.rate) / self.typical_rate * 100, 1
+            "country": country_name(self.country) if self.country else None,
+            "foreign_fee_charged": self.fee_observed,
+            "confidence": round(self.confidence, 2),
+            "why": (
+                "billed in your own currency at a foreign merchant, with no "
+                "conversion detail, while "
+                f"{self.siblings_with_detail} other charges on the same trip "
+                "carry theirs"
+                + (
+                    "; a foreign transaction fee was charged on it, so the issuer "
+                    "treated it as a foreign purchase"
+                    if self.fee_observed
+                    else ""
+                )
             ),
+            "cost": None,
         }
 
 
@@ -230,57 +263,101 @@ def detect_trips(
     return trips
 
 
-def find_poor_conversions(
-    transactions: Iterable[Mapping[str, object]],
-    *,
-    threshold: float = POOR_RATE_THRESHOLD,
-    min_samples: int = MIN_RATES_FOR_COMPARISON,
-) -> list[PoorConversion]:
-    """Find charges converted at a materially worse rate than their neighbours.
+def _looks_foreign(descriptor: str, trip_countries: Sequence[str]) -> str | None:
+    """Does this descriptor name a place abroad?
 
-    No reference rate is fetched. Each currency's own transactions supply the
-    benchmark: the median implied rate is what the card network was giving at the
-    time, and a charge well below it was converted by somebody else.
+    An unambiguous country code stands alone. An ambiguous one — ``IN``, ``CA`` —
+    counts only when it matches a country the surrounding trip already
+    established by other means, which is the same corroboration rule used
+    everywhere else, borrowing the trip as the evidence.
     """
-    by_currency: dict[str, list[Mapping[str, object]]] = {}
-    for row in transactions:
-        rate = row.get("fx_rate")
-        currency = row.get("original_currency")
-        if rate and currency and float(rate) > 0 and not row.get("is_fee"):
-            by_currency.setdefault(str(currency), []).append(row)
+    from ledgerlens.enrich.foreign import detect_country
 
-    found: list[PoorConversion] = []
-    for currency, rows in by_currency.items():
-        if len(rows) < min_samples:
-            continue
-        rates = [float(r["fx_rate"]) for r in rows]
-        typical = statistics.median(rates)
-        if typical <= 0:
+    direct = detect_country(descriptor)
+    if direct:
+        return direct
+    code = ambiguous_location(descriptor)
+    if code and code in set(trip_countries):
+        return code
+    return None
+
+
+def find_point_of_sale_conversions(
+    transactions: Iterable[Mapping[str, object]],
+    trips: Sequence[Trip] | None = None,
+) -> list[SuspectedConversion]:
+    """Find charges that look converted at the till rather than by the network.
+
+    The signal is a missing conversion line where one would be expected: a
+    foreign merchant, a home-currency amount, and sibling charges on the same
+    trip that do print their local amount and rate.
+
+    Deliberately scoped to inside a trip. A home-currency charge from a foreign
+    online shop looks identical on the statement, and ordering a book from
+    abroad is not a conversion decision anyone made at a card terminal.
+    """
+    rows = list(transactions)
+    trips = list(trips) if trips is not None else detect_trips(rows)
+    if not trips:
+        return []
+
+    fees = [r for r in rows if r.get("is_fee")]
+    found: list[SuspectedConversion] = []
+
+    for trip in trips:
+        members = [
+            r
+            for r in rows
+            if not r.get("is_fee")
+            and int(r["amount_cents"]) < 0
+            and trip.start <= _as_date(r["posted_on"]) <= trip.end
+        ]
+        with_detail = [r for r in members if r.get("original_currency")]
+        if len(with_detail) < MIN_SIBLINGS_WITH_DETAIL:
+            # This statement does not print conversion detail anyway, so a
+            # missing line says nothing.
             continue
 
-        for row in rows:
-            rate = float(row["fx_rate"])
-            shortfall = (typical - rate) / typical
-            if shortfall <= threshold:
+        detailed_spend = sum(abs(int(r["amount_cents"])) for r in with_detail)
+        expected_fee_rate = (trip.fee_cents / detailed_spend) if detailed_spend else 0.0
+
+        for row in members:
+            if row.get("original_currency"):
                 continue
+            descriptor = str(row.get("raw_description") or row.get("merchant") or "")
+            country = _looks_foreign(descriptor, trip.countries)
+            if not country:
+                continue
+
             billed = abs(int(row["amount_cents"]))
-            original = int(row.get("original_amount_cents") or 0)
-            if not original:
-                continue
-            fair_billed = original / typical
+            fee_observed = False
+            if expected_fee_rate > 0:
+                expected = billed * expected_fee_rate
+                for fee in fees:
+                    if _as_date(fee["posted_on"]) != _as_date(row["posted_on"]):
+                        continue
+                    actual = abs(int(fee["amount_cents"]))
+                    if abs(actual - expected) <= expected * FEE_MATCH_TOLERANCE:
+                        fee_observed = True
+                        break
+
+            confidence = 0.6 + (0.25 if fee_observed else 0.0)
+            if len(with_detail) >= 2 * MIN_SIBLINGS_WITH_DETAIL:
+                confidence += 0.1
+
             found.append(
-                PoorConversion(
+                SuspectedConversion(
                     merchant=str(row.get("merchant", "")) or "Unknown",
                     posted_on=_as_date(row["posted_on"]),
-                    currency=currency,
-                    rate=rate,
-                    typical_rate=typical,
                     billed_cents=billed,
-                    extra_cost_cents=int(round(billed - fair_billed)),
+                    country=country,
+                    fee_observed=fee_observed,
+                    siblings_with_detail=len(with_detail),
+                    confidence=min(1.0, confidence),
                 )
             )
 
-    found.sort(key=lambda c: -c.extra_cost_cents)
+    found.sort(key=lambda c: (-c.confidence, -c.billed_cents))
     return found
 
 
@@ -328,8 +405,7 @@ def foreign_cost_summary(
 
     fee_cents = sum(abs(int(f["amount_cents"])) for f in fees)
     spend_cents = sum(abs(int(r["amount_cents"])) for r in foreign)
-    poor = find_poor_conversions(rows)
-    poor_cents = sum(p.extra_cost_cents for p in poor)
+    suspected = find_point_of_sale_conversions(rows)
 
     by_currency: dict[str, dict[str, object]] = {}
     for row in foreign:
@@ -357,21 +433,21 @@ def foreign_cost_summary(
 
     availability = rate_data_availability(rows)
     notes: list[str] = []
-    if foreign and not availability["can_check_conversions"]:
-        if not availability["with_original_amount_and_rate"]:
-            notes.append(
-                "This export does not include the original amounts or exchange "
-                "rates, so conversion quality could not be checked. That is not "
-                "the same as finding nothing wrong. PDF statements normally print "
-                "both beside each foreign charge; most CSV exports drop them."
-            )
-        else:
-            notes.append(
-                f"Only {availability['with_original_amount_and_rate']} foreign "
-                f"charges carry a rate, which is too few in any one currency to "
-                f"establish what a normal rate looked like "
-                f"({MIN_RATES_FOR_COMPARISON} are needed)."
-            )
+    if foreign and not availability["with_original_amount_and_rate"]:
+        notes.append(
+            "This export prints no original amounts or exchange rates, so "
+            "point-of-sale conversions cannot be spotted. That is not the same "
+            "as finding none: the signal is a charge missing its conversion "
+            "line while others have theirs, and here nothing has one. PDF "
+            "statements normally print them; most CSV exports drop them."
+        )
+    if suspected:
+        notes.append(
+            "Suspected point-of-sale conversions cannot be priced. The local "
+            "amount is absent — that absence is the signal — so there is nothing "
+            "to compare a fair rate against. Such conversions typically run a few "
+            "percent above the card network's rate."
+        )
 
     return {
         "foreign_spend": round(spend_cents / 100, 2),
@@ -380,11 +456,10 @@ def foreign_cost_summary(
         "effective_fee_percent": (
             round(fee_cents / spend_cents * 100, 2) if spend_cents else 0.0
         ),
-        "poor_conversions": [p.to_dict() for p in poor],
-        "lost_to_poor_conversions": (
-            round(poor_cents / 100, 2) if availability["can_check_conversions"] else None
-        ),
-        "total_cost_of_going_abroad": round((fee_cents + poor_cents) / 100, 2),
+        "suspected_point_of_sale_conversions": [c.to_dict() for c in suspected],
+        "suspected_conversion_count": len(suspected),
+        "cost_of_suspected_conversions": None,
+        "total_measurable_cost_of_going_abroad": round(fee_cents / 100, 2),
         "by_currency": currencies,
         "rate_data": availability,
         "notes": notes,

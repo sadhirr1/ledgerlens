@@ -549,8 +549,13 @@ def write_scanned_pdf() -> None:
 #
 # Planted deliberately:
 #   * Three trips in three currencies, each a dense run of dates.
-#   * One charge converted at a materially worse rate — what dynamic currency
-#     conversion looks like on a statement, with nothing saying so.
+#   * One charge converted at the till (dynamic currency conversion). Per
+#     Mastercard's merchant guide, such a charge reaches the issuer ALREADY in
+#     the cardholder's currency, so it carries NO local amount and NO rate —
+#     it is the one foreign-looking row on the trip with nothing beneath it.
+#     An earlier version of this fixture gave it a local amount and a bad rate,
+#     which is not what a statement shows, and the tests happily confirmed the
+#     misconception.
 #   * Foreign transaction fees at a fixed percentage.
 #   * A single foreign website order, which is NOT a trip and must not be
 #     reported as one.
@@ -571,8 +576,9 @@ TRIPS = [
             ("2026-09-20", "LIVRARIA CULTURA SAO PAULO BR", 96.80),
             ("2026-09-22", "AEROPORTO DUTY FREE SAO PAULO BR", 310.00),
         ],
-        # Converted by the merchant's processor rather than the card network.
-        "poor": ("2026-09-19", "LOJA TURISTICA RIO DE JANEIRO BR", 400.00, 4.7500),
+        # Converted by the merchant's terminal: billed straight in USD, so the
+        # issuer prints no local amount and no rate for it. Only the USD figure.
+        "dcc": ("2026-09-19", "LOJA TURISTICA RIO DE JANEIRO BR", 84.21),
     },
     {
         "country": "MX", "currency": "MXN", "rate": 20.1000,
@@ -583,7 +589,7 @@ TRIPS = [
             ("2026-11-09", "MERCADO ROMA CIUDAD DE MEXICO MX", 640.00),
             ("2026-11-11", "AEROPUERTO CAFE CIUDAD DE MEXICO MX", 210.00),
         ],
-        "poor": None,
+        "dcc": None,
     },
     {
         "country": "IN", "currency": "INR", "rate": 83.4000,
@@ -595,7 +601,7 @@ TRIPS = [
             ("2026-12-09", "INDIAN COFFEE HOUSE DELHI IN", 380.00),
             ("2026-12-12", "KHAN MARKET DELHI IN", 2750.00),
         ],
-        "poor": None,
+        "dcc": None,
     },
 ]
 
@@ -620,16 +626,17 @@ def travel_rows() -> list[tuple]:
     """(date, descriptor, local_amount, currency, rate, billed, is_fee)."""
     out: list[tuple] = []
     for trip in TRIPS:
-        charges = list(trip["charges"])
-        if trip["poor"]:
-            day, desc, local, bad_rate = trip["poor"]
-            charges.append((day, desc, local))
-        for day, desc, local in charges:
-            rate = trip["rate"]
-            if trip["poor"] and desc == trip["poor"][1]:
-                rate = trip["poor"][3]
-            billed = _billed(local, rate)
-            out.append((day, desc, local, trip["currency"], rate, billed, False))
+        for day, desc, local in trip["charges"]:
+            billed = _billed(local, trip["rate"])
+            out.append((day, desc, local, trip["currency"], trip["rate"], billed, False))
+            out.append((day, "FOREIGN TRANSACTION FEE", None, None, None,
+                        round(billed * FEE_RATE, 2), True))
+        if trip["dcc"]:
+            # No local amount, no currency, no rate: the issuer never saw a
+            # foreign-currency transaction. The fee is still charged, because
+            # the issuer goes by where the charge was processed.
+            day, desc, billed = trip["dcc"]
+            out.append((day, desc, None, None, None, billed, False))
             out.append((day, "FOREIGN TRANSACTION FEE", None, None, None,
                         round(billed * FEE_RATE, 2), True))
     for day, desc, local, code, rate in ONLINE_FOREIGN:

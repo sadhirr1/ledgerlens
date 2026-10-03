@@ -305,18 +305,26 @@ def find_trips(min_transactions: int = 3) -> dict[str, Any]:
 def foreign_transaction_costs() -> dict[str, Any]:
     """What spending abroad cost on top of the purchases themselves.
 
-    Two things: the issuer's foreign transaction fees, which are itemised, and
-    conversions done at a worse rate than the rest — the signature of dynamic
-    currency conversion, where a card machine abroad offers to bill you in your
-    home currency and sets its own rate.
+    Two things: the issuer's foreign transaction fees, which are itemised and
+    can simply be summed, and charges that look converted at the till rather
+    than by the card network.
 
-    No exchange rates are looked up. Each currency's own transactions provide the
-    benchmark, so a charge well off that cluster is the one that was converted by
-    somebody else.
+    The second is identified by an absence. When a cardholder accepts conversion
+    at a foreign terminal the charge reaches the issuer already in the home
+    currency, so the statement shows no local amount and no rate for it. A
+    foreign-looking merchant with no conversion line, sitting among trip charges
+    that have theirs, is the signature — and a foreign transaction fee beside it
+    corroborates it, since the issuer charges that on where a transaction was
+    processed rather than what currency it arrived in.
+
+    Those are reported as suspected and deliberately not priced: without the
+    local amount there is nothing to compare a fair rate against, so any figure
+    would be invented.
 
     Returns:
-        Fee totals, the effective percentage, any poor conversions with what
-        each cost, and a per-currency breakdown.
+        Fee totals, the effective percentage, suspected point-of-sale
+        conversions, a per-currency breakdown, and notes saying what could not
+        be determined.
     """
     with session(db_path()) as conn:
         rows = query.travel_rows(conn)

@@ -252,56 +252,60 @@ different fingerprint — several merchants, over several days — so an isolate
 foreign charge is not reported as one. Telling someone they went to London
 because they bought a jumper is worse than missing a short trip.
 
-**The expensive part is invisible.** Beyond the itemised foreign transaction fee
-sits dynamic currency conversion: the card machine abroad offers to bill you in
-your home currency, you accept, and the merchant's processor sets the rate
-instead of your card network. It costs several percent, and nothing on the
-statement says it happened.
+**The expensive part is invisible, and detecting it is not what you'd guess.**
+Beyond the itemised foreign transaction fee sits dynamic currency conversion: the
+card terminal abroad offers to bill you in your home currency, you accept, and
+the merchant's processor sets the rate instead of your card network.
 
-It is detectable without looking up a single rate, which matters because this
-project makes no network calls. Every foreign charge implies a rate — local
-amount over billed amount — and across a trip those cluster tightly, since they
-all went through the same network within days of each other. A conversion handled
-by somebody else sits visibly off that cluster:
+The obvious approach — compare the exchange rates across your foreign charges and
+flag the bad one — cannot work, and I built it before checking. When DCC is
+accepted the transaction reaches your issuer **already in your own currency**.
+The issuer has nothing to convert, so it prints no local amount and no rate.
+Mastercard's merchant guide is explicit: the account is "debited using the
+exchange rate offered by the acquirer", with "NO currency conversion details on
+cardholder statement". A rate comparison therefore only ever examines the charges
+that were *not* converted at the till.
+
+What identifies it is the absence, read in context — a foreign merchant, a
+home-currency amount, no conversion line, sitting among trip charges that have
+theirs:
 
 ```
-Loja Turistica   2026-09-19   rate 4.7500 vs 5.1401 typical
-                              7.6% worse - it cost $6.39
+SUSPECTED POINT-OF-SALE CONVERSION
+  merchant             : Loja Turistica
+  date                 : 2026-09-19
+  billed               : 84.21
+  country              : Brazil
+  foreign_fee_charged  : True
+  confidence           : 0.95
+  cost                 : None
+  why : billed in your own currency at a foreign merchant, with no conversion
+        detail, while 7 other charges on the same trip carry theirs; a foreign
+        transaction fee was charged on it, so the issuer treated it as a
+        foreign purchase
 ```
 
-The benchmark is the statement's own other transactions. No reference data, no
-network, and the evidence was in the file all along.
+The fee corroborates it: issuers charge that on where a transaction was
+processed, not what currency it arrived in, so the fee says "abroad" while the
+missing line says "somebody else converted this".
 
-**But only if the file has it.** PDF statements print the original amount and the
-rate beside each foreign charge. Most CSV exports drop both and give only the
-converted figure. So the conversion check runs against a PDF and cannot run
-against a typical CSV — and saying "no bad conversions found" in the second case
-would be a confident answer the data does not support:
+**`cost` is null on purpose.** Without the local amount there is nothing to
+compare a fair rate against. The absence is the signal and it is also why the
+loss cannot be measured, so nothing is reported as though it had been.
+
+Detection is scoped to inside a trip. A home-currency charge from a foreign
+online shop looks identical on a statement, and nobody chose a currency at a
+terminal to buy a book.
+
+**And it only works if the statement prints conversion lines at all.** PDF
+statements do; most CSV exports drop them. Where nothing has a conversion line
+there is no contrast to read, and silence must not be mistaken for an all-clear:
 
 ```
 travel_card.csv   14 foreign charges, 0 with rates
-  lost to poor conversions: unknown
-  ! This export does not include the original amounts or exchange rates, so
-    conversion quality could not be checked. That is not the same as finding
-    nothing wrong.
+  ! This export prints no original amounts or exchange rates, so point-of-sale
+    conversions cannot be spotted. That is not the same as finding none.
 ```
-
-The same gap costs a whole trip. Country is read off the descriptor, and a code
-that is also a US state needs a currency to corroborate it — which a plain CSV
-does not have. India silently disappears while Brazil and Mexico survive, since
-`BR` and `MX` are not state codes. So the unresolved codes are counted and
-reported, with the fix:
-
-```
-! 12 charges end in a location code that is both a country and a US state
-  (IN x7, CA x5) and carried no currency to settle it, so they were read as
-  domestic. If a trip is missing, importing the PDF statement rather than a
-  CSV usually resolves it.
-```
-
-Elsewhere in this README, CSV is the reliable format and PDF the fallback. For
-travel it is the other way round, and that is worth knowing before you conclude
-your conversions were fine.
 
 ### Re-importing must be safe
 

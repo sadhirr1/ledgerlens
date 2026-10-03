@@ -166,17 +166,36 @@ property was worth more than the edge case.
 **How I'd know I was wrong.** If real statements routinely carry too few
 transactions per currency for the comparison to fire, the feature is theatre.
 
-**What checking this changed.** I built the feature before confirming what real
-exports contain, which was the wrong order. They turn out to differ: PDF
-statements print the original amount and rate beside each foreign charge, and
-most CSV exports drop both. My first version reported "0 lost to bad
-conversions" against a CSV — indistinguishable from "your conversions were
-fine", when the file had never carried the evidence. It now reports unknown and
-says why. The same gap loses an entire trip when the country code collides with
-a US state, so those are counted and surfaced too.
+**What checking this changed, twice.** I built the feature before confirming how
+any of it works, which was the wrong order, and it cost me the same mistake in
+two different ways.
 
-That is the same failure this project exists to catch, reintroduced by me in a
-new feature: not a crash, just a confident answer the data could not support.
+First, the data. PDF statements print the original amount and rate beside each
+foreign charge; most CSV exports drop both. My first version reported "0 lost to
+bad conversions" against a CSV, indistinguishable from "your conversions were
+fine" when the file had never carried the evidence.
+
+Then, worse, the mechanism. I had assumed a point-of-sale conversion shows up as
+a foreign charge converted at a poor rate, so I detected it by comparing implied
+rates. It does not. When a cardholder accepts conversion at the till, the
+transaction reaches the issuer *already in the home currency* — Mastercard's
+merchant guide states the account is "debited using the exchange rate offered by
+the acquirer", with "NO currency conversion details on cardholder statement". So
+such a charge has no rate to compare, and a rate comparison can only ever examine
+the charges that were not converted at the till. My detector was structurally
+incapable of finding what it claimed to find.
+
+My test suite passed throughout, because I had written the fixture from the same
+assumption as the code. Planting a conversion that carried a local amount and a
+bad rate created a transaction that does not occur, and then asserted the
+detector found it. The test confirmed the assumption, not the behaviour.
+
+That is the project's own named failure mode — a confident answer the data cannot
+support — committed by me, in the feature whose README section is about avoiding
+it. The lesson I'd take is narrower than "test more": **a fixture written from
+the same belief as the code tests nothing.** Ground truth has to come from
+outside, and for anything involving somebody else's system, that means reading
+their documentation before writing the parser rather than after.
 
 ### 6. Read-only, and unable to act
 
