@@ -278,3 +278,96 @@ def test_merchants_group_across_csv_and_pdf(conn, fixtures):
     }
     assert {"Restaurante Sabor", "Cafe Coffee Day", "Taqueria El Sol"} <= csv_merchants
     assert csv_merchants == pdf_merchants
+
+
+# --- what a real export actually carries ------------------------------------
+#
+# PDF statements print the original amount and the rate beside each foreign
+# charge. Most CSV exports give only the converted figure. The difference is not
+# cosmetic: it decides which questions can be answered at all, and the tool has
+# to say which case it is in rather than reporting a reassuring zero.
+
+@pytest.fixture()
+def csv_without_fx(conn, fixtures):
+    result = import_file(conn, fixtures / "travel_card_no_fx.csv")
+    assert not result.errors, result.errors
+    return conn
+
+
+def test_a_csv_without_rates_cannot_check_conversions(csv_without_fx):
+    from ledgerlens.enrich.travel import rate_data_availability
+
+    availability = rate_data_availability(travel_rows(csv_without_fx))
+    assert availability["foreign_transactions"] > 0
+    assert availability["with_original_amount_and_rate"] == 0
+    assert availability["can_check_conversions"] is False
+
+
+def test_unavailable_is_reported_as_unknown_not_as_zero(csv_without_fx):
+    """The distinction this whole project is about.
+
+    Reporting 0 would read as "your conversions were fine". The honest answer is
+    that the file never contained the evidence.
+    """
+    summary = foreign_cost_summary(travel_rows(csv_without_fx))
+    assert summary["lost_to_poor_conversions"] is None
+    assert summary["poor_conversions"] == []
+    assert any("not the same as finding nothing wrong" in n for n in summary["notes"])
+
+
+def test_a_pdf_statement_can_check_conversions(travelled):
+    from ledgerlens.enrich.travel import rate_data_availability
+
+    availability = rate_data_availability(travel_rows(travelled))
+    assert availability["can_check_conversions"] is True
+    assert set(availability["checkable_currencies"]) == {"BRL", "MXN", "INR"}
+    assert foreign_cost_summary(travel_rows(travelled))["notes"] == []
+
+
+def test_fees_are_still_found_without_rate_data(csv_without_fx):
+    """Fees appear as their own rows, so a plain CSV still reveals them."""
+    summary = foreign_cost_summary(travel_rows(csv_without_fx))
+    assert summary["foreign_transaction_fees"] > 0
+
+
+def test_unambiguous_countries_survive_a_plain_csv(csv_without_fx):
+    codes = {c["code"] for c in spending_by_country(csv_without_fx)["countries"] if c["code"]}
+    assert {"BR", "MX"} <= codes, "BR and MX are not US state codes"
+
+
+def test_an_ambiguous_country_is_lost_without_a_currency_and_said_so(csv_without_fx):
+    """India disappears from a plain CSV, because ``IN`` is also Indiana.
+
+    That is the correct default. It is also how a whole trip goes missing, so
+    the count of unresolved codes is reported rather than left silent.
+    """
+    from ledgerlens.enrich.travel import unresolved_locations
+
+    codes = {c["code"] for c in spending_by_country(csv_without_fx)["countries"] if c["code"]}
+    assert "IN" not in codes
+
+    unresolved = unresolved_locations(travel_rows(csv_without_fx))
+    assert unresolved.get("IN", 0) >= 6, "the India charges should be counted as unresolved"
+
+
+def test_the_same_statement_as_pdf_recovers_the_lost_trip(conn, fixtures):
+    """The actionable half of the caveat: the PDF carries what the CSV dropped."""
+    import_file(conn, fixtures / "travel_card_no_fx.csv")
+    csv_countries = {c["code"] for c in spending_by_country(conn)["countries"] if c["code"]}
+    conn.execute("DELETE FROM transactions")
+    conn.execute("DELETE FROM import_log")
+    conn.commit()
+
+    import_file(conn, fixtures / "travel_statement.pdf")
+    pdf_countries = {c["code"] for c in spending_by_country(conn)["countries"] if c["code"]}
+
+    assert "IN" not in csv_countries
+    assert "IN" in pdf_countries
+
+
+def test_the_dcc_threshold_catches_a_documented_markup():
+    """Published DCC markups start around 3% (interbank plus 2.95% is a cited
+    example). A threshold above that would miss the cheapest ones."""
+    from ledgerlens.enrich.travel import POOR_RATE_THRESHOLD
+
+    assert POOR_RATE_THRESHOLD < 0.0295

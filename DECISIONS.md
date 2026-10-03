@@ -166,6 +166,18 @@ property was worth more than the edge case.
 **How I'd know I was wrong.** If real statements routinely carry too few
 transactions per currency for the comparison to fire, the feature is theatre.
 
+**What checking this changed.** I built the feature before confirming what real
+exports contain, which was the wrong order. They turn out to differ: PDF
+statements print the original amount and rate beside each foreign charge, and
+most CSV exports drop both. My first version reported "0 lost to bad
+conversions" against a CSV — indistinguishable from "your conversions were
+fine", when the file had never carried the evidence. It now reports unknown and
+says why. The same gap loses an entire trip when the country code collides with
+a US state, so those are counted and surfaced too.
+
+That is the same failure this project exists to catch, reintroduced by me in a
+new feature: not a crash, just a confident answer the data could not support.
+
 ### 6. Read-only, and unable to act
 
 **Decision.** The tool never writes to your source files and cannot touch your

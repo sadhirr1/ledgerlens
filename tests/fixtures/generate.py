@@ -269,6 +269,7 @@ def main() -> None:
     write_scanned_pdf()
     write_travel_statement_pdf()
     write_travel_csv()
+    write_travel_csv_no_fx()
     n_csv = len(list(HERE.glob('*.csv')))
     n_pdf = len(list(HERE.glob('*.pdf')))
     print(f'wrote {n_csv} CSV and {n_pdf} PDF fixtures from {len(rows)} ledger rows')
@@ -715,6 +716,23 @@ def write_travel_csv() -> None:
         for day, desc, local, code, _rate, billed, _is_fee in travel_rows():
             text = f"{desc} {local:,.2f} {code}" if local is not None and code else desc
             w.writerow([f"{day[5:7]}/{day[8:10]}/{day[:4]}", text, f"-{billed:.2f}", "USD"])
+
+
+def write_travel_csv_no_fx() -> None:
+    """The common case: a CSV export with the FX detail stripped out.
+
+    Most card CSV exports give only the converted home-currency figure — no
+    original amount, no currency code, no rate. Country can still be read off
+    the descriptor, so trips are still found, but conversion quality cannot be
+    judged at all. This fixture exists so the tests can prove the tool says so
+    rather than reporting a reassuring zero.
+    """
+    path = HERE / "travel_card_no_fx.csv"
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["Transaction Date", "Description", "Amount"])
+        for day, desc, _local, _code, _rate, billed, _is_fee in travel_rows():
+            w.writerow([f"{day[5:7]}/{day[8:10]}/{day[:4]}", desc, f"-{billed:.2f}"])
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ from ledgerlens.config import db_path, user_rules_path
 from ledgerlens.db import session
 from ledgerlens.enrich.categories import CategoryEngine
 from ledgerlens.enrich.recurring import detect_subscriptions
-from ledgerlens.enrich.travel import detect_trips, foreign_cost_summary
+from ledgerlens.enrich.travel import detect_trips, foreign_cost_summary, unresolved_locations
 from ledgerlens.ingest import import_file, import_folder, recategorize
 
 # The MCP SDK renamed FastMCP to MCPServer in 2.0. The decorator, the tool
@@ -278,12 +278,26 @@ def find_trips(min_transactions: int = 3) -> dict[str, Any]:
     with session(db_path()) as conn:
         rows = query.travel_rows(conn)
     trips = detect_trips(rows, min_transactions=min_transactions)
+    unresolved = unresolved_locations(rows)
+
+    notes: list[str] = []
+    if unresolved:
+        listed = ", ".join(f"{code} x{n}" for code, n in unresolved.items())
+        notes.append(
+            f"{sum(unresolved.values())} charges end in a location code that is "
+            f"both a country and a US state ({listed}) and carried no currency to "
+            f"settle it, so they were read as domestic. If a trip is missing, "
+            f"importing the PDF statement rather than a CSV usually resolves it, "
+            f"because the PDF prints the original currency."
+        )
+
     return {
         "trips": [t.to_dict() for t in trips],
         "count": len(trips),
         "total_spent_abroad": round(
             sum(t.spend_cents + t.fee_cents for t in trips) / 100, 2
         ),
+        "notes": notes,
     }
 
 

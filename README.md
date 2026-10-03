@@ -272,6 +272,37 @@ Loja Turistica   2026-09-19   rate 4.7500 vs 5.1401 typical
 The benchmark is the statement's own other transactions. No reference data, no
 network, and the evidence was in the file all along.
 
+**But only if the file has it.** PDF statements print the original amount and the
+rate beside each foreign charge. Most CSV exports drop both and give only the
+converted figure. So the conversion check runs against a PDF and cannot run
+against a typical CSV — and saying "no bad conversions found" in the second case
+would be a confident answer the data does not support:
+
+```
+travel_card.csv   14 foreign charges, 0 with rates
+  lost to poor conversions: unknown
+  ! This export does not include the original amounts or exchange rates, so
+    conversion quality could not be checked. That is not the same as finding
+    nothing wrong.
+```
+
+The same gap costs a whole trip. Country is read off the descriptor, and a code
+that is also a US state needs a currency to corroborate it — which a plain CSV
+does not have. India silently disappears while Brazil and Mexico survive, since
+`BR` and `MX` are not state codes. So the unresolved codes are counted and
+reported, with the fix:
+
+```
+! 12 charges end in a location code that is both a country and a US state
+  (IN x7, CA x5) and carried no currency to settle it, so they were read as
+  domestic. If a trip is missing, importing the PDF statement rather than a
+  CSV usually resolves it.
+```
+
+Elsewhere in this README, CSV is the reliable format and PDF the fallback. For
+travel it is the other way round, and that is worth knowing before you conclude
+your conversions were fine.
+
 ### Re-importing must be safe
 
 People re-download overlapping ranges constantly: January–March, then February–April.

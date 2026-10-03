@@ -365,3 +365,20 @@ def strip_fx_fragments(text: str) -> str:
     cleaned = _SYMBOL_AMOUNT.sub("", cleaned)
     cleaned = _RATE.sub("", cleaned)
     return re.sub(r"\s{2,}", " ", cleaned).strip(" -,;")
+
+
+def ambiguous_location(descriptor: str) -> str | None:
+    """Return the trailing code when it could be a country *or* a US state.
+
+    These rows are treated as domestic, which is right far more often than not.
+    But on an export with no currency column it is also how an entire trip to
+    India disappears, so the count is worth surfacing rather than leaving the
+    user to wonder why their holiday is missing.
+    """
+    if not descriptor:
+        return None
+    tokens = [t.strip(",.;:()").upper() for t in descriptor.split() if t.strip(",.;:()")]
+    if not tokens:
+        return None
+    last = tokens[-1]
+    return last if last in AMBIGUOUS_CODES else None

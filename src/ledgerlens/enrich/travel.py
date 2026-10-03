@@ -41,7 +41,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from ledgerlens.enrich.foreign import country_name
+from ledgerlens.enrich.foreign import ambiguous_location, country_name
 
 # A gap longer than this ends a trip. Long enough to cover a few quiet days,
 # short enough to keep two trips to the same country separate.
@@ -53,9 +53,13 @@ MIN_TRIP_MERCHANTS = 2
 MIN_TRIP_DAYS = 2
 
 # A conversion has to be this much worse than the rest to be worth reporting.
-# Ordinary rate movement across a trip is well under this; dynamic currency
-# conversion is usually several percent.
-POOR_RATE_THRESHOLD = 0.03
+# Documented dynamic currency conversion markups start around 3% — a commonly
+# cited example is interbank plus 2.95% — and run far higher. A card network's
+# own rate moves well under 1% day to day for a major pair. The threshold sits
+# just below the bottom of the DCC range so the cheapest ones are still caught;
+# the exact percentage is always reported alongside, so a borderline case can be
+# judged rather than taken on trust.
+POOR_RATE_THRESHOLD = 0.025
 MIN_RATES_FOR_COMPARISON = 4
 
 
@@ -128,6 +132,25 @@ class PoorConversion:
 
 def _foreign_rows(rows: Iterable[Mapping[str, object]]) -> list[Mapping[str, object]]:
     return [r for r in rows if r.get("country") or r.get("original_currency")]
+
+
+def unresolved_locations(
+    transactions: Iterable[Mapping[str, object]],
+) -> dict[str, int]:
+    """Count charges whose location code could be a country or a US state.
+
+    ``IN`` is India and Indiana. Without a foreign currency on the row the
+    domestic reading wins, which is the right default and also means a whole
+    trip can go unreported. Returning the tally lets the caller say so.
+    """
+    counts: dict[str, int] = {}
+    for row in transactions:
+        if row.get("country") or row.get("original_currency"):
+            continue
+        code = ambiguous_location(str(row.get("raw_description") or row.get("merchant") or ""))
+        if code:
+            counts[code] = counts.get(code, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
 
 def detect_trips(
@@ -261,6 +284,40 @@ def find_poor_conversions(
     return found
 
 
+def rate_data_availability(
+    transactions: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Report whether the conversion check can run at all.
+
+    This matters more than it looks. PDF statements print the original amount and
+    the rate beside each foreign charge; most CSV exports drop both and give only
+    the converted figure. Run the conversion check against a CSV and it finds
+    nothing — not because the conversions were fine, but because the evidence was
+    never in the file.
+
+    Reporting "nothing found" in that situation would be the same class of
+    mistake this project tries hardest to avoid: a confident answer that the data
+    cannot support. So availability is stated separately from findings.
+    """
+    rows = list(transactions)
+    foreign = [r for r in _foreign_rows(rows) if not r.get("is_fee")]
+    with_rates = [r for r in foreign if r.get("fx_rate") and r.get("original_amount_cents")]
+
+    per_currency: dict[str, int] = {}
+    for row in with_rates:
+        code = str(row.get("original_currency") or "")
+        if code:
+            per_currency[code] = per_currency.get(code, 0) + 1
+    checkable = sorted(c for c, n in per_currency.items() if n >= MIN_RATES_FOR_COMPARISON)
+
+    return {
+        "foreign_transactions": len(foreign),
+        "with_original_amount_and_rate": len(with_rates),
+        "checkable_currencies": checkable,
+        "can_check_conversions": bool(checkable),
+    }
+
+
 def foreign_cost_summary(
     transactions: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
@@ -298,6 +355,24 @@ def foreign_cost_summary(
         for code, entry in sorted(by_currency.items())
     }
 
+    availability = rate_data_availability(rows)
+    notes: list[str] = []
+    if foreign and not availability["can_check_conversions"]:
+        if not availability["with_original_amount_and_rate"]:
+            notes.append(
+                "This export does not include the original amounts or exchange "
+                "rates, so conversion quality could not be checked. That is not "
+                "the same as finding nothing wrong. PDF statements normally print "
+                "both beside each foreign charge; most CSV exports drop them."
+            )
+        else:
+            notes.append(
+                f"Only {availability['with_original_amount_and_rate']} foreign "
+                f"charges carry a rate, which is too few in any one currency to "
+                f"establish what a normal rate looked like "
+                f"({MIN_RATES_FOR_COMPARISON} are needed)."
+            )
+
     return {
         "foreign_spend": round(spend_cents / 100, 2),
         "foreign_transaction_fees": round(fee_cents / 100, 2),
@@ -306,7 +381,11 @@ def foreign_cost_summary(
             round(fee_cents / spend_cents * 100, 2) if spend_cents else 0.0
         ),
         "poor_conversions": [p.to_dict() for p in poor],
-        "lost_to_poor_conversions": round(poor_cents / 100, 2),
+        "lost_to_poor_conversions": (
+            round(poor_cents / 100, 2) if availability["can_check_conversions"] else None
+        ),
         "total_cost_of_going_abroad": round((fee_cents + poor_cents) / 100, 2),
         "by_currency": currencies,
+        "rate_data": availability,
+        "notes": notes,
     }

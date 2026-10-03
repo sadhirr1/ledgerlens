@@ -444,7 +444,7 @@ def travel_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Rows needed for trip and conversion analysis, done in process."""
     rows = conn.execute(
         """
-        SELECT posted_on, merchant, category, amount_cents, country,
+        SELECT posted_on, merchant, category, amount_cents, country, raw_description,
                original_amount_cents, original_currency, fx_rate, is_fee
         FROM transactions
         ORDER BY posted_on
