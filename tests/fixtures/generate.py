@@ -267,6 +267,8 @@ def main() -> None:
     write_card_statement_pdf()
     write_bank_statement_pdf()
     write_scanned_pdf()
+    write_travel_statement_pdf()
+    write_travel_csv()
     n_csv = len(list(HERE.glob('*.csv')))
     n_pdf = len(list(HERE.glob('*.pdf')))
     print(f'wrote {n_csv} CSV and {n_pdf} PDF fixtures from {len(rows)} ledger rows')
@@ -533,6 +535,186 @@ def write_scanned_pdf() -> None:
     for i in range(12):
         c.line(80, 590 - i * 18, 520, 590 - i * 18)
     c.save()
+
+
+# ---------------------------------------------------------------------------
+# Travel fixtures
+# ---------------------------------------------------------------------------
+#
+# A card used abroad produces rows that look ordinary and mean something else:
+# the billed amount is a conversion of a local-currency charge, with a fee added
+# and a rate applied. These fixtures plant all of that so the tests can assert
+# against known truth rather than against whatever the parser happened to do.
+#
+# Planted deliberately:
+#   * Three trips in three currencies, each a dense run of dates.
+#   * One charge converted at a materially worse rate — what dynamic currency
+#     conversion looks like on a statement, with nothing saying so.
+#   * Foreign transaction fees at a fixed percentage.
+#   * A single foreign website order, which is NOT a trip and must not be
+#     reported as one.
+#   * A domestic charge ending "INDIANAPOLIS IN", which must stay in Indiana
+#     rather than being read as India.
+
+FEE_RATE = 0.027
+
+TRIPS = [
+    {
+        "country": "BR", "currency": "BRL", "rate": 5.1400,
+        "charges": [
+            ("2026-09-12", "RESTAURANTE SABOR SAO PAULO BR", 125.00),
+            ("2026-09-13", "HOTEL COPACABANA RIO DE JANEIRO BR", 840.00),
+            ("2026-09-14", "UBER DO BRASIL SAO PAULO BR", 46.50),
+            ("2026-09-16", "MERCADO MUNICIPAL SAO PAULO BR", 212.30),
+            ("2026-09-18", "CAFE DO CENTRO RIO DE JANEIRO BR", 38.00),
+            ("2026-09-20", "LIVRARIA CULTURA SAO PAULO BR", 96.80),
+            ("2026-09-22", "AEROPORTO DUTY FREE SAO PAULO BR", 310.00),
+        ],
+        # Converted by the merchant's processor rather than the card network.
+        "poor": ("2026-09-19", "LOJA TURISTICA RIO DE JANEIRO BR", 400.00, 4.7500),
+    },
+    {
+        "country": "MX", "currency": "MXN", "rate": 20.1000,
+        "charges": [
+            ("2026-11-05", "TAQUERIA EL SOL CIUDAD DE MEXICO MX", 480.00),
+            ("2026-11-06", "HOTEL AZTECA CIUDAD DE MEXICO MX", 3200.00),
+            ("2026-11-08", "MUSEO NACIONAL CIUDAD DE MEXICO MX", 95.00),
+            ("2026-11-09", "MERCADO ROMA CIUDAD DE MEXICO MX", 640.00),
+            ("2026-11-11", "AEROPUERTO CAFE CIUDAD DE MEXICO MX", 210.00),
+        ],
+        "poor": None,
+    },
+    {
+        "country": "IN", "currency": "INR", "rate": 83.4000,
+        "charges": [
+            ("2026-12-02", "CAFE COFFEE DAY MUMBAI IN", 1250.00),
+            ("2026-12-03", "TAJ HOTELS MUMBAI IN", 18500.00),
+            ("2026-12-05", "OLA CABS BENGALURU IN", 640.00),
+            ("2026-12-07", "FABINDIA BENGALURU IN", 4300.00),
+            ("2026-12-09", "INDIAN COFFEE HOUSE DELHI IN", 380.00),
+            ("2026-12-12", "KHAN MARKET DELHI IN", 2750.00),
+        ],
+        "poor": None,
+    },
+]
+
+# Foreign, but not travel: one order from a British website.
+ONLINE_FOREIGN = [("2026-10-14", "BOOKSHOP ONLINE LONDON GB", 42.00, "GBP", 0.7900)]
+
+DOMESTIC = [
+    ("2026-09-02", "WHOLEFDS MKT #10238 OAKLAND CA", 84.31),
+    ("2026-09-28", "INDIANAPOLIS COLTS SHOP INDIANAPOLIS IN", 45.00),
+    ("2026-10-03", "NETFLIX.COM 866-579-7172 CA", 15.99),
+    ("2026-10-21", "SHELL OIL 57442890 SAN JOSE CA", 52.10),
+    ("2026-11-25", "TRADER JOE'S #182 BERKELEY CA", 62.40),
+    ("2026-12-20", "TARGET 00012345 EMERYVILLE CA", 103.77),
+]
+
+
+def _billed(local: float, rate: float) -> float:
+    return round(local / rate, 2)
+
+
+def travel_rows() -> list[tuple]:
+    """(date, descriptor, local_amount, currency, rate, billed, is_fee)."""
+    out: list[tuple] = []
+    for trip in TRIPS:
+        charges = list(trip["charges"])
+        if trip["poor"]:
+            day, desc, local, bad_rate = trip["poor"]
+            charges.append((day, desc, local))
+        for day, desc, local in charges:
+            rate = trip["rate"]
+            if trip["poor"] and desc == trip["poor"][1]:
+                rate = trip["poor"][3]
+            billed = _billed(local, rate)
+            out.append((day, desc, local, trip["currency"], rate, billed, False))
+            out.append((day, "FOREIGN TRANSACTION FEE", None, None, None,
+                        round(billed * FEE_RATE, 2), True))
+    for day, desc, local, code, rate in ONLINE_FOREIGN:
+        billed = _billed(local, rate)
+        out.append((day, desc, local, code, rate, billed, False))
+    for day, desc, billed in DOMESTIC:
+        out.append((day, desc, None, None, None, billed, False))
+    out.sort(key=lambda r: (r[0], r[1]))
+    return out
+
+
+def write_travel_statement_pdf() -> None:
+    """A card statement from abroad: FX detail on continuation lines."""
+    from reportlab.pdfgen import canvas
+
+    path = HERE / "travel_statement.pdf"
+    c = canvas.Canvas(str(path), pagesize=(648, 792), invariant=1)
+    c.setTitle("Statement")
+    rows = travel_rows()
+    total = round(sum(r[5] for r in rows), 2)
+
+    x_date, x_desc, x_right = 50, 101, 560
+    page, y = 1, 0.0
+
+    def header() -> float:
+        c.setFont("Helvetica", 8)
+        c.drawString(58, 765, "A SAMPLE CARDHOLDER")
+        c.drawString(262, 765, "Account Ending 0-00000")
+        c.drawString(511, 762, f"p. {page}")
+        return 720.0
+
+    y = header()
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(58, y, "New Charges")
+    y -= 18
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Summary")
+    y -= 14
+    c.setFont("Helvetica", 8)
+    c.drawString(50, y, "Total New Charges")
+    c.drawRightString(x_right, y, f"${total:,.2f}")
+    y -= 20
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(58, y, "Detail")
+    y -= 14
+    c.setFont("Helvetica-Bold", 8)
+    c.drawRightString(x_right, y, "Amount")
+    y -= 14
+
+    for day, desc, local, code, rate, billed, _is_fee in rows:
+        if y < 90:
+            c.setFont("Helvetica-Oblique", 7)
+            c.drawString(479, 40, "Continued on next page")
+            c.showPage()
+            page += 1
+            y = header()
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(58, y, "Detail Continued")
+            y -= 14
+            c.setFont("Helvetica-Bold", 8)
+            c.drawRightString(x_right, y, "Amount")
+            y -= 14
+        shown = f"{day[5:7]}/{day[8:10]}/{day[2:4]}"
+        c.setFont("Helvetica", 8)
+        c.drawString(x_date, y - 1.1, shown)
+        c.drawString(x_desc, y, desc)
+        c.drawRightString(x_right, y - 1.1, f"${billed:,.2f}")
+        y -= 11.4
+        if local is not None and code:
+            c.setFont("Helvetica", 7)
+            c.drawString(x_desc, y, f"{local:,.2f} {code}")
+            y -= 10.0
+            c.drawString(x_desc, y, f"Exchange Rate {rate:.6f}")
+            y -= 12.1
+    c.save()
+
+
+def write_travel_csv() -> None:
+    """The same trips as a CSV export, with the FX detail inside the descriptor."""
+    path = HERE / "travel_card_2026q4.csv"
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["Transaction Date", "Description", "Amount", "Currency"])
+        for day, desc, local, code, _rate, billed, _is_fee in travel_rows():
+            text = f"{desc} {local:,.2f} {code}" if local is not None and code else desc
+            w.writerow([f"{day[5:7]}/{day[8:10]}/{day[:4]}", text, f"-{billed:.2f}", "USD"])
 
 
 if __name__ == "__main__":

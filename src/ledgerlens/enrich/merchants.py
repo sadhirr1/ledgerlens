@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+from ledgerlens.enrich.foreign import ALPHA3_ALPHA2, COUNTRY_NAMES, US_STATES
+
 # Payment processors and transaction-kind noise that prefixes the real name.
 _PREFIXES = [
     # Wells-Fargo-style descriptors put the merchant *after* the date, so this
@@ -39,20 +41,25 @@ _PREFIXES = [
     r"web\s+id\s*:?\s*\d*", r"gsq\s*\*", r"sumup\s*\*", r"izettle\s*\*",
 ]
 
-_US_STATES = {
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
-    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
-    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
-    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
-    "WI", "WY", "DC",
-}
+_US_STATES = US_STATES
+
+# A descriptor from abroad ends the same way a domestic one does, with a
+# location — "SAO PAULO BR" rather than "OAKLAND CA". Both are noise.
+_LOCATION_CODES = _US_STATES | set(COUNTRY_NAMES) | set(ALPHA3_ALPHA2)
 
 # First words of common multi-word city names. Used to remove a second city
 # token only when it is safe to — see :func:`_strip_location`.
 _CITY_PREFIXES = {
-    "SAN", "NEW", "LOS", "LAS", "SANTA", "FORT", "FT", "SAINT", "ST", "PORT",
-    "WEST", "EAST", "NORTH", "SOUTH", "LAKE", "MOUNT", "MT", "EL", "DEL",
+    "SAN", "NEW", "LOS", "LAS", "SANTA", "SANTO", "FORT", "FT", "SAINT", "ST",
+    "PORT", "WEST", "EAST", "NORTH", "SOUTH", "LAKE", "MOUNT", "MT", "EL",
+    # Non-English city names are at least as common once a card leaves home.
+    "SAO", "CIUDAD", "PUERTO", "NUEVA", "NUEVO", "VILLA", "NOVA", "BAHIA",
+    "KUALA", "HO", "PHNOM", "ABU", "AL", "NEU", "BAD",
 }
+
+# "Rio de Janeiro", "Ciudad de Mexico", "Vina del Mar": a connector means the
+# word in front of it belongs to the place name too.
+_CITY_CONNECTORS = {"DE", "DA", "DO", "DOS", "DAS", "DEL", "DI", "DU"}
 
 # A descriptor reads left to right: merchant name first, machine noise after.
 # Rather than nibbling junk off the end — which fails on multi-word cities like
@@ -132,24 +139,41 @@ def _cut_at_junk(text: str) -> str:
 
 
 def _strip_location(text: str) -> str:
-    """Remove a trailing ``CITY ST`` fragment.
+    """Remove a trailing location fragment: ``CITY ST`` or ``CITY COUNTRY``.
 
-    The state code is the anchor. Dropping one word for the city handles most
-    descriptors, but multi-word cities would leave a stray "SAN" or "NEW"
-    behind. Removing words greedily instead is worse — it eats "BOTTLE" from
-    "BLUE BOTTLE OAKLAND CA". So one word comes off, and a second only when
-    what remains is a recognisable city-name prefix.
+    The location code is the anchor. One word comes off for the city, which
+    covers most descriptors. Removing words greedily instead is worse — it eats
+    "BOTTLE" from "BLUE BOTTLE OAKLAND CA" — so anything beyond the first word
+    has to be justified.
+
+    Two things justify it. A recognisable city-name prefix ("SAN" of San Jose,
+    "SAO" of Sao Paulo). And a connector: "Rio de Janeiro" and "Ciudad de
+    Mexico" are three-word cities, and the word in front of a "de" is part of
+    the place, not the merchant. "CAFE DE PARIS LONDON GB" is unaffected,
+    because by the time the city is gone the connector is no longer trailing.
     """
     tokens = text.split()
-    if len(tokens) < 2 or tokens[-1].upper() not in _US_STATES:
+    if len(tokens) < 2 or tokens[-1].upper() not in _LOCATION_CODES:
         return text
 
-    tokens.pop()  # the state code
+    tokens.pop()  # the state or country code
     if len(tokens) > 1 and tokens[-1].isalpha():
         tokens.pop()  # the city, or its last word
-    if len(tokens) > 1 and tokens[-1].upper() in _CITY_PREFIXES:
-        tokens.pop()  # "SAN" of "SAN JOSE", "NEW" of "NEW YORK"
-    return " ".join(tokens)
+
+    for _ in range(2):
+        if len(tokens) <= 1:
+            break
+        tail = tokens[-1].upper()
+        if tail in _CITY_CONNECTORS:
+            tokens.pop()
+            if len(tokens) > 1 and tokens[-1].isalpha():
+                tokens.pop()  # the word the connector binds to
+        elif tail in _CITY_PREFIXES:
+            tokens.pop()
+        else:
+            break
+
+    return " ".join(tokens) if tokens else text
 
 
 def _titlecase(text: str) -> str:

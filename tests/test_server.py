@@ -23,6 +23,9 @@ EXPECTED_TOOLS = {
     "find_subscriptions",
     "get_transactions",
     "compare_periods",
+    "spending_by_country",
+    "find_trips",
+    "foreign_transaction_costs",
     "suggest_category_rules",
     "apply_category_rules",
 }
@@ -117,3 +120,38 @@ def test_apply_category_rules_reports_what_changed(home, fixtures):
     stats = server.apply_category_rules()
     assert stats["examined"] > 0
     assert stats["changed"] == 0, "a fresh import is already categorized"
+
+
+# --- the travel tools ------------------------------------------------------
+
+def test_spending_by_country_tool(home, fixtures):
+    server.import_statements(str(fixtures / "travel_statement.pdf"))
+    result = server.spending_by_country()
+    codes = {c["code"] for c in result["countries"] if c["code"]}
+    assert {"BR", "MX", "IN"} <= codes
+    assert result["total_spent"] > 0
+
+
+def test_find_trips_tool(home, fixtures, spec):
+    server.import_statements(str(fixtures / "travel_statement.pdf"))
+    result = server.find_trips()
+    assert result["count"] == len(spec.TRIPS)
+    assert result["total_spent_abroad"] > 0
+    assert all(t["fees"] > 0 for t in result["trips"])
+
+
+def test_foreign_transaction_costs_tool(home, fixtures):
+    server.import_statements(str(fixtures / "travel_statement.pdf"))
+    result = server.foreign_transaction_costs()
+    assert result["foreign_transaction_fees"] > 0
+    assert len(result["poor_conversions"]) == 1
+    assert result["poor_conversions"][0]["worse_by_percent"] > 3
+
+
+def test_travel_tools_are_quiet_on_a_domestic_only_database(home, fixtures):
+    """Someone who never leaves the country should get empty results, not errors."""
+    server.import_statements(str(fixtures / "main_checking.csv"))
+    assert server.find_trips()["count"] == 0
+    assert server.foreign_transaction_costs()["foreign_transaction_fees"] == 0
+    countries = server.spending_by_country()["countries"]
+    assert [c["country"] for c in countries] == ["Home country"]

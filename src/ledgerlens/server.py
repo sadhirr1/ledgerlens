@@ -26,6 +26,7 @@ from ledgerlens.config import db_path, user_rules_path
 from ledgerlens.db import session
 from ledgerlens.enrich.categories import CategoryEngine
 from ledgerlens.enrich.recurring import detect_subscriptions
+from ledgerlens.enrich.travel import detect_trips, foreign_cost_summary
 from ledgerlens.ingest import import_file, import_folder, recategorize
 
 # The MCP SDK renamed FastMCP to MCPServer in 2.0. The decorator, the tool
@@ -240,6 +241,72 @@ def compare_periods(
             period_b=(period_b_start, period_b_end),
             limit=limit,
         )
+
+
+@mcp.tool()
+def spending_by_country(
+    start: str | None = None, end: str | None = None, limit: int = 25
+) -> dict[str, Any]:
+    """Spending grouped by the country each charge happened in.
+
+    Useful for travel: "what did Brazil cost me?". Charges at home appear as a
+    single "Home country" bucket so the shares still cover everything.
+
+    Args:
+        start: Inclusive ISO date (YYYY-MM-DD).
+        end: Inclusive ISO date (YYYY-MM-DD).
+        limit: Maximum countries to return.
+    """
+    with session(db_path()) as conn:
+        return query.spending_by_country(conn, start=start, end=end, limit=limit)
+
+
+@mcp.tool()
+def find_trips(min_transactions: int = 3) -> dict[str, Any]:
+    """Group foreign transactions into trips, with what each one cost.
+
+    Clusters foreign charges by date to recover journeys without being told
+    about them, and attributes foreign transaction fees to the trip they fall
+    in. An isolated purchase from a foreign website is not reported as a trip.
+
+    Args:
+        min_transactions: Minimum charges before a cluster counts as a trip.
+
+    Returns:
+        Trips newest first, with dates, countries, spend and fees.
+    """
+    with session(db_path()) as conn:
+        rows = query.travel_rows(conn)
+    trips = detect_trips(rows, min_transactions=min_transactions)
+    return {
+        "trips": [t.to_dict() for t in trips],
+        "count": len(trips),
+        "total_spent_abroad": round(
+            sum(t.spend_cents + t.fee_cents for t in trips) / 100, 2
+        ),
+    }
+
+
+@mcp.tool()
+def foreign_transaction_costs() -> dict[str, Any]:
+    """What spending abroad cost on top of the purchases themselves.
+
+    Two things: the issuer's foreign transaction fees, which are itemised, and
+    conversions done at a worse rate than the rest — the signature of dynamic
+    currency conversion, where a card machine abroad offers to bill you in your
+    home currency and sets its own rate.
+
+    No exchange rates are looked up. Each currency's own transactions provide the
+    benchmark, so a charge well off that cluster is the one that was converted by
+    somebody else.
+
+    Returns:
+        Fee totals, the effective percentage, any poor conversions with what
+        each cost, and a per-currency breakdown.
+    """
+    with session(db_path()) as conn:
+        rows = query.travel_rows(conn)
+    return foreign_cost_summary(rows)
 
 
 @mcp.tool()

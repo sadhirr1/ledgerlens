@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -49,13 +49,22 @@ CREATE TABLE IF NOT EXISTS transactions (
     category        TEXT NOT NULL DEFAULT 'Uncategorized',
     source_file     TEXT NOT NULL,
     source_row      INTEGER NOT NULL,
-    occurrence      INTEGER NOT NULL DEFAULT 0
+    occurrence      INTEGER NOT NULL DEFAULT 0,
+    -- Set only when a charge happened abroad. original_amount_cents is what the
+    -- merchant actually charged in local currency; amount_cents is what the
+    -- issuer billed after converting it.
+    original_amount_cents INTEGER,
+    original_currency     TEXT,
+    fx_rate               REAL,
+    country               TEXT,
+    is_fee                INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS ix_tx_posted   ON transactions(posted_on);
 CREATE INDEX IF NOT EXISTS ix_tx_merchant ON transactions(merchant);
 CREATE INDEX IF NOT EXISTS ix_tx_category ON transactions(category);
 CREATE INDEX IF NOT EXISTS ix_tx_account  ON transactions(account_id);
+CREATE INDEX IF NOT EXISTS ix_tx_country  ON transactions(country);
 
 CREATE TABLE IF NOT EXISTS import_log (
     file_hash     TEXT PRIMARY KEY,
@@ -69,6 +78,25 @@ CREATE TABLE IF NOT EXISTS import_log (
 """
 
 
+# Columns added after v1. A database built by an earlier version is upgraded
+# in place rather than rebuilt, so nobody loses an import history to an upgrade.
+_ADDED_SINCE_V1 = {
+    "original_amount_cents": "INTEGER",
+    "original_currency": "TEXT",
+    "fx_rate": "REAL",
+    "country": "TEXT",
+    "is_fee": "INTEGER NOT NULL DEFAULT 0",
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(transactions)")}
+    for column, decl in _ADDED_SINCE_V1.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {column} {decl}")
+    conn.commit()
+
+
 def connect(db_path: Path | str) -> sqlite3.Connection:
     """Open (creating if needed) the LedgerLens database at ``db_path``."""
     path = Path(db_path).expanduser()
@@ -76,6 +104,7 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('version', ?)",
         (str(SCHEMA_VERSION),),

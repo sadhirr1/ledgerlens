@@ -146,7 +146,27 @@ has to recur across the whole window it spans, and a price point has to be a
 meaningful share of what that merchant charges. Fifteen results became five, with
 none wrong.
 
-### 5. Read-only, and unable to act
+### 5. Foreign spending is inferred, never looked up
+
+**Decision.** Countries, currencies and conversion quality are all derived from
+the statement itself. No exchange-rate API, no country database fetch.
+
+**Why.** Decision 1 is load-bearing. The moment this calls out for a reference
+rate, "no network" stops being true and the one test that proves it starts
+failing. So the benchmark for "was this converted badly?" is the other
+transactions in the same currency on the same statement, which all went through
+the same card network within days of each other.
+
+**Cost.** It only works with enough transactions in a currency to establish a
+normal — four, by default. A single foreign charge cannot be judged, and is not.
+It also measures *relative* badness: if every conversion on a trip was poor,
+nothing stands out. A rate lookup would catch that. I decided the privacy
+property was worth more than the edge case.
+
+**How I'd know I was wrong.** If real statements routinely carry too few
+transactions per currency for the comparison to fire, the feature is theatre.
+
+### 6. Read-only, and unable to act
 
 **Decision.** The tool never writes to your source files and cannot touch your
 accounts.
@@ -159,7 +179,7 @@ hard about it.
 **Cost.** It stops at telling you. You still have to go and cancel the gym
 yourself.
 
-### 6. Tool results are budgeted for a context window
+### 7. Tool results are budgeted for a context window
 
 **Decision.** Every query returns aggregates by default; line-item detail is
 capped at 200 rows and always reports when it truncated.
@@ -191,6 +211,11 @@ tool reports paying your Amex bill as spending and your spending as income. Then
 I got it wrong a second, subtler way: the printed sign *restates* the section
 heading's direction rather than modifying it, so applying both re-inverts
 everything.
+
+**Two-letter country codes.** `IN` is India and Indiana; `CA` is Canada and
+California. The first version read every Indianapolis purchase as foreign. The
+fix was not a better lookup table — it was accepting that the code alone is not
+evidence, and requiring something else on the row to corroborate it.
 
 **A latching skip flag.** Statements are laid out Section → Summary → Detail.
 Skipping the summary is correct; forgetting to stop skipping silently returned 4

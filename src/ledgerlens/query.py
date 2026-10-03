@@ -371,3 +371,83 @@ def all_transactions_for_recurrence(conn: sqlite3.Connection) -> list[dict[str, 
         """
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _country_label(code: str) -> str:
+    """Name a country bucket.
+
+    A foreign transaction fee has no country of its own, and bundling it into
+    the home-country total reads as domestic spending when it is the opposite —
+    a cost of having been abroad. It gets its own line.
+    """
+    from ledgerlens.enrich.foreign import country_name
+
+    if code == "__fee__":
+        return "Foreign transaction fees"
+    return country_name(code) if code else "Home country"
+
+
+def spending_by_country(
+    conn: sqlite3.Connection,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Spending grouped by the country a charge happened in.
+
+    Domestic transactions have no country and are reported as one bucket rather
+    than silently dropped, so the shares still add up to the whole.
+    """
+    where, params = _window(start, end)
+    limit = _clamp(limit)
+    rows = conn.execute(
+        f"""
+        SELECT CASE WHEN is_fee THEN '__fee__' ELSE COALESCE(country, '') END AS code,
+               SUM(-amount_cents) AS spent_cents,
+               COUNT(*) AS n,
+               MIN(posted_on) AS lo, MAX(posted_on) AS hi
+        FROM transactions
+        WHERE {where} AND amount_cents < 0
+        GROUP BY code
+        ORDER BY spent_cents DESC
+        LIMIT ?
+        """,
+        [*params, limit],
+    ).fetchall()
+
+    total = conn.execute(
+        f"SELECT SUM(-amount_cents) AS s FROM transactions WHERE {where} AND amount_cents < 0",
+        params,
+    ).fetchone()["s"] or 0
+
+    return {
+        "period": {"start": start, "end": end},
+        "total_spent": _money(total),
+        "countries": [
+            {
+                "country": _country_label(r["code"]),
+                "code": r["code"] if r["code"] and r["code"] != "__fee__" else None,
+                "spent": _money(r["spent_cents"]),
+                "transactions": r["n"],
+                "first": r["lo"],
+                "last": r["hi"],
+                "share": round(r["spent_cents"] / total * 100, 1) if total else 0.0,
+            }
+            for r in rows
+        ],
+        "truncated": len(rows) == limit,
+    }
+
+
+def travel_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Rows needed for trip and conversion analysis, done in process."""
+    rows = conn.execute(
+        """
+        SELECT posted_on, merchant, category, amount_cents, country,
+               original_amount_cents, original_currency, fx_rate, is_fee
+        FROM transactions
+        ORDER BY posted_on
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]

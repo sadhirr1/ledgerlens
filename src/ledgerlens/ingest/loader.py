@@ -27,6 +27,8 @@ from pathlib import Path
 from ledgerlens.config import DialectOverride, load_override
 from ledgerlens.db import get_or_create_account
 from ledgerlens.enrich.categories import CategoryEngine
+from ledgerlens.enrich.foreign import analyse as analyse_foreign
+from ledgerlens.enrich.foreign import strip_fx_fragments
 from ledgerlens.enrich.merchants import normalize_merchant
 from ledgerlens.ingest.amounts import (
     AmountParseError,
@@ -244,7 +246,18 @@ def import_file(
             continue
 
         raw_desc = str(row.get(desc_col, "")).strip() if desc_col else ""
-        merchant = normalize_merchant(raw_desc)
+
+        # A PDF prints the original amount and conversion rate on separate lines
+        # beneath the charge; the extractor keeps those in their own field so
+        # they stay out of the merchant name. A CSV usually folds them into the
+        # descriptor, so both are offered to the analyser.
+        foreign = analyse_foreign(
+            raw_desc,
+            extra_text=str(row.get("ForeignDetail", "")),
+            billed_cents=cents,
+            home_currency=currency,
+        )
+        merchant = normalize_merchant(strip_fx_fragments(raw_desc))
         category = engine.categorize(merchant, raw_desc)
         row_currency = str(row.get(cols.get("currency", ""), "")).strip() or currency
 
@@ -257,12 +270,15 @@ def import_file(
             """
             INSERT OR IGNORE INTO transactions
                 (id, account_id, posted_on, amount_cents, currency, raw_description,
-                 merchant, category, source_file, source_row, occurrence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 merchant, category, source_file, source_row, occurrence,
+                 original_amount_cents, original_currency, fx_rate, country, is_fee)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 txn_id, account_id, posted.isoformat(), cents, row_currency,
                 raw_desc, merchant, category, path.name, offset, occurrence,
+                foreign.original_amount_cents, foreign.original_currency,
+                foreign.fx_rate, foreign.country, int(foreign.is_fee),
             ),
         )
         if cur.rowcount:

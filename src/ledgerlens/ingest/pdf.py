@@ -48,6 +48,7 @@ COL_DATE = "Date"
 COL_DESC = "Description"
 COL_AMOUNT = "Amount"
 COL_SECTION = "Section"
+COL_FOREIGN = "ForeignDetail"
 
 # A date at the very start of a row. The trailing asterisk is Amex's
 # posting-date marker.
@@ -408,15 +409,22 @@ def _from_layout(pdf) -> PdfExtraction:
 
         # --- continuation of the previous transaction --------------------
         if not date_match:
-            if (
-                rows
-                and continuation_budget > 0
-                and not in_skip_section
-                and not _is_metadata_line(text)
-                and not _money_tokens(text)
-            ):
-                rows[-1][COL_DESC] = f"{rows[-1][COL_DESC]} {text}".strip()
-                continuation_budget -= 1
+            if rows and continuation_budget > 0 and not in_skip_section:
+                from ledgerlens.enrich.foreign import parse_foreign_amount, parse_fx_rate
+
+                # A foreign charge prints its original amount and conversion
+                # rate on their own lines beneath it. Those carry money, so the
+                # plain "no money here" test for a continuation line rejects
+                # them — and they are the whole point of reading a travel
+                # statement. They are kept apart from the description so that
+                # "125.00 BRL" never ends up inside a merchant name.
+                if parse_foreign_amount(text) or parse_fx_rate(text):
+                    prior = rows[-1].get(COL_FOREIGN, "")
+                    rows[-1][COL_FOREIGN] = f"{prior} {text}".strip()
+                    continuation_budget -= 1
+                elif not _is_metadata_line(text) and not _money_tokens(text):
+                    rows[-1][COL_DESC] = f"{rows[-1][COL_DESC]} {text}".strip()
+                    continuation_budget -= 1
             continue
 
         if in_skip_section or _NOT_A_TRANSACTION.match(text):
@@ -436,6 +444,7 @@ def _from_layout(pdf) -> PdfExtraction:
                 COL_DESC: description,
                 COL_AMOUNT: amount,
                 COL_SECTION: section_name,
+                COL_FOREIGN: "",
                 "_sign": str(section_sign) if section_sign is not None else "",
             }
         )

@@ -78,8 +78,9 @@ To use it from an MCP client, add it to your config — for Claude Desktop, in
 }
 ```
 
-Then ask things like *"what did I spend on food last month?"*, *"how does this
-quarter compare to last?"*, or *"what am I paying for that I don't use?"*
+Then ask things like *"what did I spend on food last month?"*, *"what did my Brazil
+trip cost?"*, *"how much went on foreign transaction fees?"*, or *"what am I
+paying for that I don't use?"*
 
 ## What's actually hard about this
 
@@ -228,6 +229,49 @@ so and by how much, rather than a confident wrong answer. Scans with no text lay
 are rejected with a pointer to OCR; password-protected files say so and tell you
 where to put the password.
 
+### A card used abroad means something different
+
+Travel breaks the assumptions a domestic statement is read under. The amount you
+are billed is a *conversion* of what the merchant actually charged, with a fee
+added, at a rate nothing on the statement names.
+
+**Two-letter country codes collide with US state codes.** `IN` is India and
+Indiana. `CA` is Canada and California. `DE` is Delaware and Germany; `PA`,
+Pennsylvania and Panama. A lookup table reads `INDIANAPOLIS IN` as a trip to
+India.
+
+So the codes are split in two. Codes that aren't US states resolve outright.
+Ambiguous ones resolve to a country only with independent evidence — a currency
+that isn't the account's. Without it the domestic reading wins, because for most
+people most charges are domestic. Currency settles it either way: a charge in BRL
+happened in Brazil, whatever the descriptor says.
+
+**Travelling and shopping look identical one row at a time.** Buying from a
+British website is a foreign transaction and is not a trip. A trip has a
+different fingerprint — several merchants, over several days — so an isolated
+foreign charge is not reported as one. Telling someone they went to London
+because they bought a jumper is worse than missing a short trip.
+
+**The expensive part is invisible.** Beyond the itemised foreign transaction fee
+sits dynamic currency conversion: the card machine abroad offers to bill you in
+your home currency, you accept, and the merchant's processor sets the rate
+instead of your card network. It costs several percent, and nothing on the
+statement says it happened.
+
+It is detectable without looking up a single rate, which matters because this
+project makes no network calls. Every foreign charge implies a rate — local
+amount over billed amount — and across a trip those cluster tightly, since they
+all went through the same network within days of each other. A conversion handled
+by somebody else sits visibly off that cluster:
+
+```
+Loja Turistica   2026-09-19   rate 4.7500 vs 5.1401 typical
+                              7.6% worse - it cost $6.39
+```
+
+The benchmark is the statement's own other transactions. No reference data, no
+network, and the evidence was in the file all along.
+
 ### Re-importing must be safe
 
 People re-download overlapping ranges constantly: January–March, then February–April.
@@ -253,6 +297,9 @@ instead of two.
 | `find_subscriptions` | Recurring charges with annual cost and active/cancelled status |
 | `get_transactions` | Line-item drill-down (capped, always reports truncation) |
 | `compare_periods` | Category-level diff between two windows, biggest movers first |
+| `spending_by_country` | Spending grouped by where each charge happened |
+| `find_trips` | Foreign charges clustered into trips, with what each cost |
+| `foreign_transaction_costs` | FX fees, and conversions done at a worse rate than the rest |
 | `suggest_category_rules` | Uncategorized merchants, ranked by spend |
 | `apply_category_rules` | Re-categorize existing transactions after editing rules |
 
