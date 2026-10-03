@@ -556,7 +556,11 @@ def write_scanned_pdf() -> None:
 #     An earlier version of this fixture gave it a local amount and a bad rate,
 #     which is not what a statement shows, and the tests happily confirmed the
 #     misconception.
-#   * Foreign transaction fees at a fixed percentage.
+#   * Foreign transaction fees at a fixed percentage, posting a day or two
+#     AFTER the charge they belong to. An earlier version posted them on the
+#     same date, which is tidy and wrong: a statement's date column mixes
+#     transaction and posting dates, and a purchase abroad already falls on a
+#     different calendar day at home.
 #   * A single foreign website order, which is NOT a trip and must not be
 #     reported as one.
 #   * A domestic charge ending "INDIANAPOLIS IN", which must stay in Indiana
@@ -622,22 +626,27 @@ def _billed(local: float, rate: float) -> float:
     return round(local / rate, 2)
 
 
+def _shift(day: str, days: int) -> str:
+    """Move an ISO date on, for fees that post after the charge they belong to."""
+    return (date.fromisoformat(day) + timedelta(days=days)).isoformat()
+
+
 def travel_rows() -> list[tuple]:
     """(date, descriptor, local_amount, currency, rate, billed, is_fee)."""
     out: list[tuple] = []
     for trip in TRIPS:
-        for day, desc, local in trip["charges"]:
+        for i, (day, desc, local) in enumerate(trip["charges"]):
             billed = _billed(local, trip["rate"])
             out.append((day, desc, local, trip["currency"], trip["rate"], billed, False))
-            out.append((day, "FOREIGN TRANSACTION FEE", None, None, None,
-                        round(billed * FEE_RATE, 2), True))
+            out.append((_shift(day, 1 + i % 2), "FOREIGN TRANSACTION FEE",
+                        None, None, None, round(billed * FEE_RATE, 2), True))
         if trip["dcc"]:
             # No local amount, no currency, no rate: the issuer never saw a
             # foreign-currency transaction. The fee is still charged, because
             # the issuer goes by where the charge was processed.
             day, desc, billed = trip["dcc"]
             out.append((day, desc, None, None, None, billed, False))
-            out.append((day, "FOREIGN TRANSACTION FEE", None, None, None,
+            out.append((_shift(day, 2), "FOREIGN TRANSACTION FEE", None, None, None,
                         round(billed * FEE_RATE, 2), True))
     for day, desc, local, code, rate in ONLINE_FOREIGN:
         billed = _billed(local, rate)

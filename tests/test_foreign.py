@@ -419,3 +419,55 @@ def test_detection_needs_a_statement_that_prints_conversion_lines():
     from ledgerlens.enrich.travel import MIN_SIBLINGS_WITH_DETAIL
 
     assert MIN_SIBLINGS_WITH_DETAIL >= 3
+
+
+# --- dates are not as precise as they look ---------------------------------
+#
+# Two separate problems live here. Whether "04/03" is March 4th or April 3rd is
+# a format question, settled once per file from the whole column. The harder one
+# is that a purchase abroad happens at a moment that is already a different
+# calendar date at home, and that a statement's date column mixes transaction
+# dates with posting dates. Neither is recoverable, so anything matching on date
+# has to tolerate a gap.
+
+def test_a_fee_posting_days_after_its_charge_still_matches(travelled):
+    """Fees post after the charge they belong to; the fixture spaces them out."""
+    found = find_point_of_sale_conversions(travel_rows(travelled))
+    assert found and found[0].fee_observed is True
+
+
+def test_one_fee_cannot_corroborate_two_charges(travelled):
+    """Within the matching window several charges may compete for one fee row.
+
+    Letting a fee be claimed twice would inflate confidence on both.
+    """
+    from ledgerlens.enrich.travel import _match_fee
+
+    rows = travel_rows(travelled)
+    fees = [r for r in rows if r["is_fee"]]
+    charge = next(r for r in rows if not r["is_fee"] and r["amount_cents"] < 0)
+    expected = abs(int(charge["amount_cents"])) * 0.027
+
+    claimed: set[int] = set()
+    first = _match_fee(charge, fees, expected, claimed)
+    if first is not None:
+        claimed.add(first)
+        again = _match_fee(charge, fees, expected, claimed)
+        assert again != first, "a claimed fee must not be matched a second time"
+
+
+def test_the_matching_window_is_wide_enough_to_be_useful_and_narrow_enough_to_mean_something():
+    from ledgerlens.enrich.travel import FEE_MATCH_DAYS
+
+    assert 1 <= FEE_MATCH_DAYS <= 5
+
+
+def test_trip_boundaries_tolerate_a_days_drift(travelled, spec):
+    """A charge made late in the evening abroad can land on the previous day at
+    home. Trip clustering must not split on that."""
+    trips = {t.countries[0]: t for t in detect_trips(travel_rows(travelled))}
+    for planted in spec.TRIPS:
+        days = [c[0] for c in planted["charges"]]
+        trip = trips[planted["country"]]
+        assert (trip.start - date.fromisoformat(min(days))).days <= 1
+        assert len(trip.countries) == 1, "a day's drift must not merge two trips"

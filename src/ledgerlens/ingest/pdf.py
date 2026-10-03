@@ -119,6 +119,14 @@ _PURE_METADATA = re.compile(
 )
 
 MAX_CONTINUATION_LINES = 2
+
+# A continuation line sits under the description: indented well past the date
+# column, and to the left of the money column. The next page's header starts at
+# the left margin and fails the first test; a right-aligned "Continued on next
+# page" footer clears the indent but fails the second. Both are layout tests
+# rather than a list of phrases to exclude, so they hold for the footers nobody
+# thought to enumerate.
+MIN_CONTINUATION_INDENT = 20.0
 _MONEY_COLUMN_FRACTION = 0.62  # amounts live in the right-hand third of the page
 
 # A statement states its own section totals. Summing the rows we extracted and
@@ -358,6 +366,7 @@ def _from_layout(pdf) -> PdfExtraction:
     sections_seen: list[str] = []
 
     section_sign: int | None = None
+    last_row_x0: float | None = None
     section_name = "unknown"
     in_skip_section = False
     continuation_budget = 0
@@ -409,7 +418,12 @@ def _from_layout(pdf) -> PdfExtraction:
 
         # --- continuation of the previous transaction --------------------
         if not date_match:
-            if rows and continuation_budget > 0 and not in_skip_section:
+            indented = (
+                last_row_x0 is not None
+                and line["x0"] - last_row_x0 >= MIN_CONTINUATION_INDENT
+                and line["x0"] < money_threshold
+            )
+            if rows and continuation_budget > 0 and not in_skip_section and indented:
                 from ledgerlens.enrich.foreign import parse_foreign_amount, parse_fx_rate
 
                 # A foreign charge prints its original amount and conversion
@@ -438,6 +452,7 @@ def _from_layout(pdf) -> PdfExtraction:
         raw_date = date_match.group(1)
         description = _LEADING_DATE.sub("", rest, count=1).strip()
 
+        last_row_x0 = line["x0"]
         rows.append(
             {
                 COL_DATE: raw_date,

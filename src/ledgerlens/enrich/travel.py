@@ -75,8 +75,24 @@ MIN_TRIP_DAYS = 2
 MIN_SIBLINGS_WITH_DETAIL = 3
 
 # A charge is matched to its fee by date and proportion; issuers round, so the
-# match is loose.
+# amount match is loose.
 FEE_MATCH_TOLERANCE = 0.25
+
+# And the date match has to be looser still, for two reasons that compound.
+#
+# A statement's date column is not one thing. A real Amex statement marks some
+# rows with an asterisk meaning "posting date" and leaves others as the
+# transaction date, in the same column — so two rows for the same purchase can
+# legitimately differ by a day or more.
+#
+# On top of that, a purchase abroad happens at a moment that is already a
+# different calendar date at home. Buy something in Mumbai late in the evening
+# and it is still the previous afternoon in New York. Whichever date the issuer
+# records, it is the issuer's calendar, not the shop's, and the local moment is
+# not recoverable from the statement at all.
+#
+# So a fee is matched within a window rather than on an exact date.
+FEE_MATCH_DAYS = 3
 
 # How many rates are needed before a currency's typical rate is worth reporting.
 MIN_RATES_FOR_COMPARISON = 4
@@ -282,6 +298,41 @@ def _looks_foreign(descriptor: str, trip_countries: Sequence[str]) -> str | None
     return None
 
 
+def _match_fee(
+    charge: Mapping[str, object],
+    fees: Sequence[Mapping[str, object]],
+    expected_cents: float,
+    claimed: set[int],
+) -> int | None:
+    """Find the fee row belonging to ``charge``, or None.
+
+    Matched on proportion within a few days rather than on an exact date, because
+    a statement's dates are not precise enough to do better: the column mixes
+    transaction and posting dates, and a purchase abroad falls on a different
+    calendar day at home anyway.
+
+    The closest amount wins, and a fee is only ever claimed by one charge, so two
+    similar charges a day apart cannot both point at the same fee.
+    """
+    charge_date = _as_date(charge["posted_on"])
+    best: tuple[float, int] | None = None
+
+    for index, fee in enumerate(fees):
+        if index in claimed:
+            continue
+        gap = abs((_as_date(fee["posted_on"]) - charge_date).days)
+        if gap > FEE_MATCH_DAYS:
+            continue
+        actual = abs(int(fee["amount_cents"]))
+        error = abs(actual - expected_cents)
+        if error > expected_cents * FEE_MATCH_TOLERANCE:
+            continue
+        score = (error, gap)
+        if best is None or score < (best[0], 0):
+            best = (error, index)
+    return best[1] if best else None
+
+
 def find_point_of_sale_conversions(
     transactions: Iterable[Mapping[str, object]],
     trips: Sequence[Trip] | None = None,
@@ -302,6 +353,7 @@ def find_point_of_sale_conversions(
         return []
 
     fees = [r for r in rows if r.get("is_fee")]
+    claimed_fees: set[int] = set()
     found: list[SuspectedConversion] = []
 
     for trip in trips:
@@ -332,14 +384,10 @@ def find_point_of_sale_conversions(
             billed = abs(int(row["amount_cents"]))
             fee_observed = False
             if expected_fee_rate > 0:
-                expected = billed * expected_fee_rate
-                for fee in fees:
-                    if _as_date(fee["posted_on"]) != _as_date(row["posted_on"]):
-                        continue
-                    actual = abs(int(fee["amount_cents"]))
-                    if abs(actual - expected) <= expected * FEE_MATCH_TOLERANCE:
-                        fee_observed = True
-                        break
+                matched = _match_fee(row, fees, billed * expected_fee_rate, claimed_fees)
+                if matched is not None:
+                    claimed_fees.add(matched)
+                    fee_observed = True
 
             confidence = 0.6 + (0.25 if fee_observed else 0.0)
             if len(with_detail) >= 2 * MIN_SIBLINGS_WITH_DETAIL:

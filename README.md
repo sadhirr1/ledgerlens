@@ -229,6 +229,26 @@ so and by how much, rather than a confident wrong answer. Scans with no text lay
 are rejected with a pointer to OCR; password-protected files say so and tell you
 where to put the password.
 
+### Dates are less precise than they look
+
+Two different problems wear the same disguise.
+
+**Is `04/03` March 4th or April 3rd?** A format question, settled once per file
+from the whole column — covered above.
+
+**The harder one has no answer at all.** A purchase in Mumbai late one evening is
+still the previous afternoon in New York. Whatever date the issuer records is the
+issuer's calendar, not the shop's, and the local moment is simply not in the
+file. On top of that a statement's date column is not even one kind of date: a
+real Amex statement marks some rows with an asterisk meaning *posting date* and
+leaves others as the *transaction date*, in the same column.
+
+Nothing recovers that, so the design response is to never depend on exact dates.
+Fees are matched to their charge within a few days rather than on the day, since
+a fee routinely posts after the purchase it belongs to. Trip clustering tolerates
+a day's drift at the edges. Month boundaries are inherently approximate and the
+tool does not pretend otherwise.
+
 ### A card used abroad means something different
 
 Travel breaks the assumptions a domestic statement is read under. The amount you
